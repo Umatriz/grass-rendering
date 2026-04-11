@@ -1,0 +1,15 @@
+[package]
+name = "grass-rendering"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ash = "0.38.0"
+ash-window = "0.13.0"
+bevy_app = "0.18.1"
+bevy_ecs = "0.18.1"
+itertools = "0.14.0"
+raw-window-handle = "0.6.2"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
+winit = { version = "0.30.13", features = ["rwh_06"] }
