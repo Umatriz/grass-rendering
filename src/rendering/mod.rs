@@ -47,6 +47,8 @@ pub struct RenderContext {
 
     swapchain: (vk::SwapchainKHR, khr::swapchain::Device),
     swapchain_images: Vec<vk::Image>,
+    swapchain_surface_format: vk::SurfaceFormatKHR,
+    swapchain_extent: vk::Extent2D,
 }
 
 impl RenderContext {
@@ -122,8 +124,13 @@ impl RenderContext {
             let physical_device = Self::pick_physical_device(&instance);
             let (device, queue) = Self::create_logical_device(&instance, physical_device, &surface);
 
-            let (swaphain, swapchain_device, swapchain_images) =
-                Self::create_swapchain(&instance, &device, physical_device, &surface, &window);
+            let (
+                swaphain,
+                swapchain_device,
+                swapchain_images,
+                swapchain_surface_format,
+                swapchain_extent,
+            ) = Self::create_swapchain(&instance, &device, physical_device, &surface, &window);
 
             Self {
                 entry,
@@ -136,6 +143,8 @@ impl RenderContext {
                 queue,
                 swapchain: (swaphain, swapchain_device),
                 swapchain_images,
+                swapchain_surface_format,
+                swapchain_extent,
             }
         }
     }
@@ -310,7 +319,13 @@ impl RenderContext {
         physical_device: vk::PhysicalDevice,
         surface: &(vk::SurfaceKHR, khr::surface::Instance),
         window: &Window,
-    ) -> (vk::SwapchainKHR, khr::swapchain::Device, Vec<vk::Image>) {
+    ) -> (
+        vk::SwapchainKHR,
+        khr::swapchain::Device,
+        Vec<vk::Image>,
+        vk::SurfaceFormatKHR,
+        vk::Extent2D,
+    ) {
         unsafe {
             let surface_capabilities = surface
                 .1
@@ -353,7 +368,13 @@ impl RenderContext {
                 .unwrap();
             let swapchain_images = swapchain_device.get_swapchain_images(swapchain).unwrap();
 
-            (swapchain, swapchain_device, swapchain_images)
+            (
+                swapchain,
+                swapchain_device,
+                swapchain_images,
+                format,
+                swapchain_extent,
+            )
         }
     }
 
