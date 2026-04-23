@@ -1,7 +1,7 @@
 use bevy_app::{App, AppExit};
 use rendering::RenderingPlugin;
-use tracing::{error, info, warn};
-use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
+use tracing::{Level, error, info, warn};
+use tracing_subscriber::{EnvFilter, Layer, filter, layer::SubscriberExt, util::SubscriberInitExt};
 use windowing::WindowingPlugin;
 
 mod rendering;
@@ -9,11 +9,14 @@ mod windowing;
 
 fn main() -> AppExit {
     tracing_subscriber::registry()
+        // .with(
+        //     EnvFilter::try_from_default_env()
+        //         .unwrap_or_else(|_| format!("{}=debug", env!("CARGO_CRATE_NAME")).into()),
+        // )
         .with(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| format!("{}=debug", env!("CARGO_CRATE_NAME")).into()),
+            tracing_subscriber::fmt::layer()
+                .with_filter(filter::Targets::new().with_target("VULKAN", Level::TRACE)),
         )
-        .with(tracing_subscriber::fmt::layer().pretty())
         .init();
 
     info!("Logging is successfully initialized");

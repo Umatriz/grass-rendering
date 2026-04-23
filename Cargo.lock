@@ -902,6 +902,7 @@ dependencies = [
  "ash-window",
  "bevy_app",
  "bevy_ecs",
+ "bytemuck",
  "itertools",
  "raw-window-handle",
  "tracing",
