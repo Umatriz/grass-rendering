@@ -9,6 +9,7 @@ ash-window = "0.13.0"
 bevy_app = "0.18.1"
 bevy_ecs = "0.18.1"
 bytemuck = "1.25.0"
+glam = { version = "0.32.1", features = ["bytemuck"] }
 itertools = "0.14.0"
 raw-window-handle = "0.6.2"
 tracing = "0.1.44"

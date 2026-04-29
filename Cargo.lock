@@ -290,7 +290,7 @@ dependencies = [
  "downcast-rs 2.0.2",
  "erased-serde",
  "foldhash 0.2.0",
- "glam",
+ "glam 0.30.10",
  "indexmap",
  "serde",
  "smallvec",
@@ -895,6 +895,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "glam"
+version = "0.32.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f70749695b063ecbf6b62949ccccde2e733ec3ecbbd71d467dca4e5c6c97cca0"
+dependencies = [
+ "bytemuck",
+]
+
+[[package]]
 name = "grass-rendering"
 version = "0.1.0"
 dependencies = [
@@ -903,6 +912,7 @@ dependencies = [
  "bevy_app",
  "bevy_ecs",
  "bytemuck",
+ "glam 0.32.1",
  "itertools",
  "raw-window-handle",
  "tracing",

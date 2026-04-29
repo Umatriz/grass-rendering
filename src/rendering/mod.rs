@@ -1,25 +1,78 @@
-use std::{borrow::Cow, ffi::CStr, io::Read, sync::Arc};
+use std::{borrow::Cow, ffi::CStr, io::Read, ptr, sync::Arc};
 
 use ash::{Device, Entry, Instance, ext, khr, vk};
 use bevy_app::{Plugin, PostUpdate, Startup};
 use bevy_ecs::{
+    message::MessageReader,
     resource::Resource,
-    schedule::ScheduleLabel,
-    system::{Commands, Res},
+    schedule::{IntoScheduleConfigs, ScheduleLabel},
+    system::{Commands, Res, ResMut},
 };
+use bytemuck::{Pod, Zeroable};
+use glam::{Vec2, Vec3, vec2, vec3};
 use itertools::Itertools;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use tracing::{Level, error, event, info, span, trace, trace_span, warn};
-use winit::{event_loop::OwnedDisplayHandle, window::Window};
+use winit::{
+    dpi::PhysicalSize, event::WindowEvent, event_loop::OwnedDisplayHandle, window::Window,
+};
 
-use crate::windowing::{AppWindows, WinitOwnedDisplayHandle};
+use crate::windowing::{AppWindows, RawWinitWindowEvent, WinitOwnedDisplayHandle};
+
+pub const MAX_FRAMES_IN_FLIGHT: u32 = 2;
+
+#[derive(Pod, Zeroable, Clone, Copy)]
+#[repr(C)]
+pub struct Vertex {
+    pos: Vec2,
+    color: Vec3,
+}
+
+impl Vertex {
+    fn get_binding_description() -> vk::VertexInputBindingDescription {
+        vk::VertexInputBindingDescription::default()
+            .binding(0)
+            .stride(size_of::<Vertex>() as u32)
+            .input_rate(vk::VertexInputRate::VERTEX)
+    }
+
+    fn get_attribute_descriptions() -> [vk::VertexInputAttributeDescription; 2] {
+        [
+            vk::VertexInputAttributeDescription::default()
+                .location(0)
+                .binding(0)
+                .format(vk::Format::R32G32_SFLOAT)
+                .offset(0),
+            vk::VertexInputAttributeDescription::default()
+                .location(1)
+                .binding(0)
+                .format(vk::Format::R32G32B32_SFLOAT)
+                .offset(size_of::<Vec2>() as u32),
+        ]
+    }
+}
+
+const VERTICES: &[Vertex] = &[
+    Vertex {
+        pos: vec2(0.0, -0.5),
+        color: vec3(1.0, 0.0, 0.0),
+    },
+    Vertex {
+        pos: vec2(0.5, 0.5),
+        color: vec3(0.0, 1.0, 0.0),
+    },
+    Vertex {
+        pos: vec2(-0.5, 0.0),
+        color: vec3(0.0, 0.0, 1.0),
+    },
+];
 
 pub struct RenderingPlugin;
 
 impl Plugin for RenderingPlugin {
     fn build(&self, app: &mut bevy_app::App) {
         app.add_systems(Startup, setup_render_context);
-        app.add_systems(PostUpdate, render);
+        app.add_systems(PostUpdate, (resize, render).chain());
         app.add_systems(CleanUp, destroy_render_context);
     }
 }
@@ -38,25 +91,42 @@ fn setup_render_context(
     info!("Render context was successfully created");
 }
 
-fn render(render_context: Res<RenderContext>) {
+fn render(mut render_context: ResMut<RenderContext>, windows: Res<AppWindows>) {
     render_context.draw_frame();
+}
+
+fn resize(
+    mut render_context: ResMut<RenderContext>,
+    mut winit_events: MessageReader<RawWinitWindowEvent>,
+    windows: Res<AppWindows>,
+) {
+    for event in winit_events.read() {
+        match event.event {
+            WindowEvent::Resized(size) => {
+                render_context.recreate_swapchain(size);
+                render_context.swapchain_ok = true;
+                render_context.draw_frame();
+            }
+            _ => {}
+        }
+    }
 }
 
 fn destroy_render_context(render_context: Res<RenderContext>) {
     unsafe {
         render_context.device.device_wait_idle().unwrap();
 
-        render_context
-            .device
-            .destroy_fence(render_context.draw_fence, None);
+        for fence in &render_context.in_flight_fences {
+            render_context.device.destroy_fence(*fence, None);
+        }
 
-        render_context
-            .device
-            .destroy_semaphore(render_context.present_complete_semaphore, None);
+        for semaphore in &render_context.present_complete_semaphores {
+            render_context.device.destroy_semaphore(*semaphore, None);
+        }
 
-        render_context
-            .device
-            .destroy_semaphore(render_context.render_finished_semaphore, None);
+        for semaphore in &render_context.render_finished_semaphores {
+            render_context.device.destroy_semaphore(*semaphore, None);
+        }
 
         render_context
             .device
@@ -120,12 +190,18 @@ pub struct RenderContext {
     graphics_pipeline: vk::Pipeline,
     pipeline_layout: vk::PipelineLayout,
 
-    command_pool: vk::CommandPool,
-    command_buffer: vk::CommandBuffer,
+    vertex_buffer: vk::Buffer,
+    vertex_buffer_memory: vk::DeviceMemory,
 
-    present_complete_semaphore: vk::Semaphore,
-    render_finished_semaphore: vk::Semaphore,
-    draw_fence: vk::Fence,
+    command_pool: vk::CommandPool,
+    command_buffers: Vec<vk::CommandBuffer>,
+
+    present_complete_semaphores: Vec<vk::Semaphore>,
+    render_finished_semaphores: Vec<vk::Semaphore>,
+    in_flight_fences: Vec<vk::Fence>,
+
+    frame_index: usize,
+    swapchain_ok: bool,
 }
 
 impl RenderContext {
@@ -208,7 +284,13 @@ impl RenderContext {
                 swapchain_images,
                 swapchain_surface_format,
                 swapchain_extent,
-            ) = Self::create_swapchain(&instance, &device, physical_device, &surface, &window);
+            ) = Self::create_swapchain(
+                &instance,
+                &device,
+                physical_device,
+                &surface,
+                window.inner_size(),
+            );
 
             let swapchain_image_views =
                 Self::create_image_views(&device, swapchain_surface_format, &swapchain_images);
@@ -217,9 +299,11 @@ impl RenderContext {
                 Self::create_graphics_pipeline(&device, swapchain_extent, swapchain_surface_format);
 
             let command_pool = Self::create_command_pool(&device, queue_family_index);
-            let command_buffer = Self::create_command_buffer(&device, command_pool);
-            let (present_complete_semaphore, render_finished_semaphore, draw_fence) =
-                Self::create_sync_objects(&device);
+            let (vertex_buffer, vertex_buffer_memory) =
+                Self::create_vertex_buffer(&instance, &device, physical_device);
+            let command_buffers = Self::create_command_buffers(&device, command_pool);
+            let (present_complete_semaphores, render_finished_semaphores, in_flight_fences) =
+                Self::create_sync_objects(&device, swapchain_images.len());
 
             Self {
                 entry,
@@ -237,11 +321,15 @@ impl RenderContext {
                 swapchain_image_views,
                 graphics_pipeline,
                 pipeline_layout,
+                vertex_buffer,
+                vertex_buffer_memory,
                 command_pool,
-                command_buffer,
-                present_complete_semaphore,
-                render_finished_semaphore,
-                draw_fence,
+                command_buffers,
+                present_complete_semaphores,
+                render_finished_semaphores,
+                in_flight_fences,
+                frame_index: 0,
+                swapchain_ok: false,
             }
         }
     }
@@ -418,7 +506,7 @@ impl RenderContext {
         device: &Device,
         physical_device: vk::PhysicalDevice,
         surface: &(vk::SurfaceKHR, khr::surface::Instance),
-        window: &Window,
+        size: PhysicalSize<u32>,
     ) -> (
         vk::SwapchainKHR,
         khr::swapchain::Device,
@@ -432,7 +520,7 @@ impl RenderContext {
                 .get_physical_device_surface_capabilities(physical_device, surface.0)
                 .unwrap();
 
-            let swapchain_extent = Self::choose_swapchain_extent(surface_capabilities, window);
+            let swapchain_extent = Self::choose_swapchain_extent(surface_capabilities, size);
             let min_image_count = Self::choose_swapchain_min_image_count(surface_capabilities);
 
             let present_modes = surface
@@ -494,13 +582,11 @@ impl RenderContext {
 
     fn choose_swapchain_extent(
         capabilities: vk::SurfaceCapabilitiesKHR,
-        window: &Window,
+        size: PhysicalSize<u32>,
     ) -> vk::Extent2D {
         if capabilities.current_extent.width != u32::MAX {
             return capabilities.current_extent;
         }
-
-        let size = window.inner_size();
 
         vk::Extent2D::default()
             .width(size.width.clamp(
@@ -559,7 +645,7 @@ impl RenderContext {
         swapchain_extent: vk::Extent2D,
         swapchain_format: vk::SurfaceFormatKHR,
     ) -> (vk::Pipeline, vk::PipelineLayout) {
-        let mut shader_code = std::fs::File::open("./shaders/slang.spv").unwrap();
+        let mut shader_code = std::fs::File::open("./shaders/triangle.spv").unwrap();
         let mut buf = vec![];
         shader_code.read_to_end(&mut buf).unwrap();
         let shader_module = create_shader_module(device, &buf);
@@ -580,7 +666,12 @@ impl RenderContext {
 
         let pipeline_dynamic_state_create_info =
             vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
-        let vertex_input_info = vk::PipelineVertexInputStateCreateInfo::default();
+
+        let vertex_binding_descriptions = &[Vertex::get_binding_description()];
+        let vertex_attribute_descriptions = &Vertex::get_attribute_descriptions();
+        let vertex_input_info = vk::PipelineVertexInputStateCreateInfo::default()
+            .vertex_binding_descriptions(vertex_binding_descriptions)
+            .vertex_attribute_descriptions(vertex_attribute_descriptions);
         let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
             .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
 
@@ -653,25 +744,98 @@ impl RenderContext {
         unsafe { device.create_command_pool(&create_info, None).unwrap() }
     }
 
-    fn create_command_buffer(device: &Device, command_pool: vk::CommandPool) -> vk::CommandBuffer {
+    fn create_vertex_buffer(
+        instance: &Instance,
+        device: &Device,
+        physical_device: vk::PhysicalDevice,
+    ) -> (vk::Buffer, vk::DeviceMemory) {
+        unsafe {
+            let buffer_info = vk::BufferCreateInfo::default()
+                .size(size_of_val(VERTICES) as u64)
+                .usage(vk::BufferUsageFlags::VERTEX_BUFFER)
+                .sharing_mode(vk::SharingMode::EXCLUSIVE);
+
+            let buffer = device.create_buffer(&buffer_info, None).unwrap();
+
+            let mem_requirements = device.get_buffer_memory_requirements(buffer);
+
+            let memory_allocate_info = vk::MemoryAllocateInfo::default()
+                .allocation_size(mem_requirements.size)
+                .memory_type_index(Self::find_memory_type(
+                    instance,
+                    physical_device,
+                    mem_requirements.memory_type_bits,
+                    vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+                ));
+            let vertex_buffer_memory = device.allocate_memory(&memory_allocate_info, None).unwrap();
+
+            device
+                .bind_buffer_memory(buffer, vertex_buffer_memory, 0)
+                .unwrap();
+
+            let data = device
+                .map_memory(
+                    vertex_buffer_memory,
+                    0,
+                    buffer_info.size,
+                    vk::MemoryMapFlags::empty(),
+                )
+                .unwrap();
+
+            let data = data as *mut Vertex;
+            ptr::copy_nonoverlapping(VERTICES.as_ptr(), data, VERTICES.len());
+
+            device.unmap_memory(vertex_buffer_memory);
+
+            (buffer, vertex_buffer_memory)
+        }
+    }
+
+    fn find_memory_type(
+        instance: &Instance,
+        physical_device: vk::PhysicalDevice,
+        type_filter: u32,
+        properties: vk::MemoryPropertyFlags,
+    ) -> u32 {
+        unsafe {
+            let mem_properties = instance.get_physical_device_memory_properties(physical_device);
+
+            for i in 0..mem_properties.memory_type_count {
+                if (type_filter & (1 << i) > 0)
+                    && mem_properties.memory_types[i as usize]
+                        .property_flags
+                        .contains(properties)
+                {
+                    return i;
+                }
+            }
+
+            panic!("failed to find suitable memory type")
+        }
+    }
+
+    fn create_command_buffers(
+        device: &Device,
+        command_pool: vk::CommandPool,
+    ) -> Vec<vk::CommandBuffer> {
         let command_buffer_alloc_info = vk::CommandBufferAllocateInfo::default()
             .command_pool(command_pool)
             .level(vk::CommandBufferLevel::PRIMARY)
-            .command_buffer_count(1);
+            .command_buffer_count(MAX_FRAMES_IN_FLIGHT);
 
-        let buffer = unsafe {
+        unsafe {
             device
                 .allocate_command_buffers(&command_buffer_alloc_info)
-                .unwrap()[0]
-        };
-
-        buffer
+                .unwrap()
+        }
     }
 
     fn record_command_buffer(&self, swapchain_image_index: usize) {
         unsafe {
+            let command_buffer = self.command_buffers[self.frame_index];
+
             self.device
-                .begin_command_buffer(self.command_buffer, &vk::CommandBufferBeginInfo::default())
+                .begin_command_buffer(command_buffer, &vk::CommandBufferBeginInfo::default())
                 .unwrap();
 
             self.transition_image_layout(
@@ -708,16 +872,19 @@ impl RenderContext {
                 .color_attachments(color_attachments);
 
             self.device
-                .cmd_begin_rendering(self.command_buffer, &rendering_info);
+                .cmd_begin_rendering(command_buffer, &rendering_info);
 
             self.device.cmd_bind_pipeline(
-                self.command_buffer,
+                command_buffer,
                 vk::PipelineBindPoint::GRAPHICS,
                 self.graphics_pipeline,
             );
 
+            self.device
+                .cmd_bind_vertex_buffers(command_buffer, 0, &[self.vertex_buffer], &[0]);
+
             self.device.cmd_set_viewport(
-                self.command_buffer,
+                command_buffer,
                 0,
                 &[vk::Viewport::default()
                     .x(0.0)
@@ -728,16 +895,17 @@ impl RenderContext {
                     .max_depth(1.0)],
             );
             self.device.cmd_set_scissor(
-                self.command_buffer,
+                command_buffer,
                 0,
                 &[vk::Rect2D::default()
                     .offset(vk::Offset2D::default())
                     .extent(self.swapchain_extent)],
             );
 
-            self.device.cmd_draw(self.command_buffer, 3, 1, 0, 0);
+            self.device
+                .cmd_draw(command_buffer, VERTICES.len() as u32, 1, 0, 0);
 
-            self.device.cmd_end_rendering(self.command_buffer);
+            self.device.cmd_end_rendering(command_buffer);
 
             self.transition_image_layout(
                 swapchain_image_index,
@@ -749,7 +917,7 @@ impl RenderContext {
                 vk::PipelineStageFlags2::BOTTOM_OF_PIPE,
             );
 
-            self.device.end_command_buffer(self.command_buffer).unwrap();
+            self.device.end_command_buffer(command_buffer).unwrap();
         }
     }
 
@@ -786,54 +954,87 @@ impl RenderContext {
             vk::DependencyInfo::default().image_memory_barriers(image_memory_barriers);
         unsafe {
             self.device
-                .cmd_pipeline_barrier2(self.command_buffer, &dependency_info)
+                .cmd_pipeline_barrier2(self.command_buffers[self.frame_index], &dependency_info)
         };
     }
 
-    fn create_sync_objects(device: &Device) -> (vk::Semaphore, vk::Semaphore, vk::Fence) {
+    fn create_sync_objects(
+        device: &Device,
+        num_swapchain_images: usize,
+    ) -> (Vec<vk::Semaphore>, Vec<vk::Semaphore>, Vec<vk::Fence>) {
         unsafe {
-            (
-                device
-                    .create_semaphore(&vk::SemaphoreCreateInfo::default(), None)
-                    .unwrap(),
-                device
-                    .create_semaphore(&vk::SemaphoreCreateInfo::default(), None)
-                    .unwrap(),
-                device
-                    .create_fence(
-                        &vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED),
-                        None,
+            let (present_complete_semaphores, in_flight_fences) = (0..MAX_FRAMES_IN_FLIGHT)
+                .map(|_| {
+                    (
+                        device
+                            .create_semaphore(&vk::SemaphoreCreateInfo::default(), None)
+                            .unwrap(),
+                        device
+                            .create_fence(
+                                &vk::FenceCreateInfo::default()
+                                    .flags(vk::FenceCreateFlags::SIGNALED),
+                                None,
+                            )
+                            .unwrap(),
                     )
-                    .unwrap(),
+                })
+                .unzip();
+
+            let render_finished_semaphores = (0..num_swapchain_images)
+                .map(|_| {
+                    device
+                        .create_semaphore(&vk::SemaphoreCreateInfo::default(), None)
+                        .unwrap()
+                })
+                .collect_vec();
+
+            (
+                present_complete_semaphores,
+                render_finished_semaphores,
+                in_flight_fences,
             )
         }
     }
 
-    fn draw_frame(&self) {
+    fn draw_frame(&mut self) {
         unsafe {
             self.device
-                .wait_for_fences(&[self.draw_fence], true, u64::MAX)
+                .wait_for_fences(&[self.in_flight_fences[self.frame_index]], true, u64::MAX)
                 .unwrap();
-            self.device.reset_fences(&[self.draw_fence]).unwrap();
 
-            let (image_index, is_suboptimal) = self
-                .swapchain
-                .1
-                .acquire_next_image(
-                    self.swapchain.0,
-                    u64::MAX,
-                    self.present_complete_semaphore,
-                    vk::Fence::null(),
+            let image_index = match self.swapchain.1.acquire_next_image(
+                self.swapchain.0,
+                u64::MAX,
+                self.present_complete_semaphores[self.frame_index],
+                vk::Fence::null(),
+            ) {
+                Ok((image_index, _)) => image_index,
+                Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
+                    self.swapchain_ok = false;
+                    return;
+                }
+                Err(e) => {
+                    panic!("failed to aquire swapchain image: {e}");
+                }
+            };
+
+            self.device
+                .reset_fences(&[self.in_flight_fences[self.frame_index]])
+                .unwrap();
+
+            self.device
+                .reset_command_buffer(
+                    self.command_buffers[self.frame_index],
+                    vk::CommandBufferResetFlags::empty(),
                 )
                 .unwrap();
-
             self.record_command_buffer(image_index as usize);
 
             let wait_destination_stage_mask = vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT;
-            let wait_semaphores = &[self.present_complete_semaphore];
+            let wait_semaphores = &[self.present_complete_semaphores[self.frame_index]];
             let wait_dst_stage_mask = &[wait_destination_stage_mask];
-            let command_buffers = &[self.command_buffer];
-            let signal_semaphores = &[self.render_finished_semaphore];
+            let command_buffers = &[self.command_buffers[self.frame_index]];
+            let signal_semaphores = &[self.render_finished_semaphores[image_index as usize]];
 
             let submit_info = vk::SubmitInfo::default()
                 .wait_semaphores(wait_semaphores)
@@ -842,10 +1043,14 @@ impl RenderContext {
                 .signal_semaphores(signal_semaphores);
 
             self.device
-                .queue_submit(self.queue, &[submit_info], self.draw_fence)
+                .queue_submit(
+                    self.queue,
+                    &[submit_info],
+                    self.in_flight_fences[self.frame_index],
+                )
                 .unwrap();
 
-            let wait_semaphores = &[self.render_finished_semaphore];
+            let wait_semaphores = &[self.render_finished_semaphores[image_index as usize]];
             let swapchains = &[self.swapchain.0];
             let image_indices = &[image_index];
             let present_info = vk::PresentInfoKHR::default()
@@ -853,10 +1058,54 @@ impl RenderContext {
                 .swapchains(swapchains)
                 .image_indices(image_indices);
 
-            self.swapchain
-                .1
-                .queue_present(self.queue, &present_info)
-                .unwrap();
+            match self.swapchain.1.queue_present(self.queue, &present_info) {
+                Ok(false) => {}
+                Ok(true) | Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
+                    self.swapchain_ok = false;
+                }
+                e => panic!("queue_present error: {e:?}"),
+            }
+
+            self.frame_index = (self.frame_index + 1) % MAX_FRAMES_IN_FLIGHT as usize;
+        }
+    }
+
+    fn clenup_swapchain(&self) {
+        unsafe {
+            for image_view in &self.swapchain_image_views {
+                self.device.destroy_image_view(*image_view, None);
+            }
+
+            self.swapchain.1.destroy_swapchain(self.swapchain.0, None);
+        }
+    }
+
+    fn recreate_swapchain(&mut self, size: PhysicalSize<u32>) {
+        unsafe {
+            self.device.device_wait_idle().unwrap();
+            self.clenup_swapchain();
+
+            let (
+                swaphain,
+                swapchain_device,
+                swapchain_images,
+                swapchain_surface_format,
+                swapchain_extent,
+            ) = Self::create_swapchain(
+                &self.instance,
+                &self.device,
+                self.physical_device,
+                &self.surface,
+                size,
+            );
+            let image_views =
+                Self::create_image_views(&self.device, swapchain_surface_format, &swapchain_images);
+
+            self.swapchain = (swaphain, swapchain_device);
+            self.swapchain_images = swapchain_images;
+            self.swapchain_surface_format = swapchain_surface_format;
+            self.swapchain_extent = swapchain_extent;
+            self.swapchain_image_views = image_views;
         }
     }
 }

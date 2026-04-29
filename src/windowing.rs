@@ -31,7 +31,7 @@ fn runner(mut app: App, event_loop: EventLoop<()>) -> AppExit {
         app.cleanup();
     }
 
-    app.add_message::<RawWnitWindowEvent>();
+    app.add_message::<RawWinitWindowEvent>();
 
     app.world_mut()
         .insert_resource(WinitOwnedDisplayHandle(event_loop.owned_display_handle()));
@@ -71,7 +71,7 @@ pub struct AppWindows {
 }
 
 #[derive(Message)]
-pub struct RawWnitWindowEvent {
+pub struct RawWinitWindowEvent {
     pub event: WindowEvent,
     pub window_id: WindowId,
 }
@@ -132,7 +132,7 @@ impl ApplicationHandler for WinitAppRunnerState {
             event => {
                 self.app
                     .world_mut()
-                    .write_message(RawWnitWindowEvent { event, window_id });
+                    .write_message(RawWinitWindowEvent { event, window_id });
             }
         }
     }
