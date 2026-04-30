@@ -1,4 +1,4 @@
-use std::{borrow::Cow, ffi::CStr, io::Read, ptr, sync::Arc};
+use std::{borrow::Cow, ffi::CStr, io::Read, mem, ptr, sync::Arc};
 
 use ash::{Device, Entry, Instance, ext, khr, vk};
 use bevy_app::{Plugin, PostUpdate, Startup};
@@ -42,12 +42,12 @@ impl Vertex {
                 .location(0)
                 .binding(0)
                 .format(vk::Format::R32G32_SFLOAT)
-                .offset(0),
+                .offset(mem::offset_of!(Vertex, pos) as u32),
             vk::VertexInputAttributeDescription::default()
                 .location(1)
                 .binding(0)
                 .format(vk::Format::R32G32B32_SFLOAT)
-                .offset(size_of::<Vec2>() as u32),
+                .offset(mem::offset_of!(Vertex, color) as u32),
         ]
     }
 }
@@ -62,7 +62,7 @@ const VERTICES: &[Vertex] = &[
         color: vec3(0.0, 1.0, 0.0),
     },
     Vertex {
-        pos: vec2(-0.5, 0.0),
+        pos: vec2(-0.5, 0.5),
         color: vec3(0.0, 0.0, 1.0),
     },
 ];
