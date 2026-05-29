@@ -8,17 +8,18 @@ struct VertexOutput {
     float4 sv_position : SV_Position;
 };
 
-static float2 positions[3] = float2[](
-    float2(0.0, -0.5),
-    float2(0.5, 0.5),
-    float2(-0.5, 0.5)
-);
+struct ViewUniform {
+    float4x4 model;
+    float4x4 view;
+    float4x4 proj;
+};
+ConstantBuffer<ViewUniform> ubo;
 
 [shader("vertex")]
 VertexOutput vertMain(VertexInput input) {
     VertexOutput output;
     output.color = input.inColor;
-    output.sv_position = float4(input.inPos, 0.0, 1.0);
+    output.sv_position = mul(ubo.proj, mul(ubo.view, mul(ubo.model, float4(input.inPos, 0.0, 1.0))));
     return output;
 }
 

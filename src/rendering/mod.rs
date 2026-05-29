@@ -1,4 +1,12 @@
-use std::{borrow::Cow, ffi::CStr, fs::File, io::Read, mem, ptr, sync::Arc};
+use std::{
+    borrow::Cow,
+    f32::consts::{FRAC_PI_2, FRAC_PI_4},
+    ffi::CStr,
+    fs::File,
+    io::Read,
+    mem, ptr,
+    sync::Arc,
+};
 
 use ash::{Device, Entry, Instance, ext, khr, vk};
 use bevy_app::{Plugin, PostUpdate, Startup};
@@ -7,9 +15,11 @@ use bevy_ecs::{
     resource::Resource,
     schedule::{IntoScheduleConfigs, ScheduleLabel},
     system::{Commands, Res, ResMut},
+    world::World,
 };
-use bytemuck::{Pod, Zeroable};
-use glam::{Vec2, Vec3, vec2, vec3};
+use bevy_time::Time;
+use bytemuck::{Pod, Zeroable, allocation};
+use glam::{Mat4, Quat, Vec2, Vec3, vec2, vec3};
 use gpu_allocator::{
     AllocationSizes, AllocatorDebugSettings, MemoryLocation,
     vulkan::{Allocation, AllocationCreateDesc, AllocationScheme, Allocator, AllocatorCreateDesc},
@@ -24,6 +34,14 @@ use winit::{
 use crate::windowing::{AppWindows, RawWinitWindowEvent, WinitOwnedDisplayHandle};
 
 pub const MAX_FRAMES_IN_FLIGHT: u32 = 2;
+
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ViewUniform {
+    model: Mat4,
+    view: Mat4,
+    projection: Mat4,
+}
 
 #[derive(Pod, Zeroable, Clone, Copy)]
 #[repr(C)]
@@ -114,28 +132,30 @@ fn setup_render_context(
     info!("Render context was successfully created");
 }
 
-fn render(mut render_context: ResMut<RenderContext>, windows: Res<AppWindows>) {
-    render_context.draw_frame();
+fn render(mut render_context: ResMut<RenderContext>, windows: Res<AppWindows>, time: Res<Time>) {
+    render_context.draw_frame(time.elapsed_secs_wrapped());
 }
 
 fn resize(
     mut render_context: ResMut<RenderContext>,
     mut winit_events: MessageReader<RawWinitWindowEvent>,
     windows: Res<AppWindows>,
+    time: Res<Time>,
 ) {
     for event in winit_events.read() {
         match event.event {
             WindowEvent::Resized(size) => {
                 render_context.recreate_window_dependent_objects(size);
                 render_context.swapchain_ok = true;
-                render_context.draw_frame();
+                render_context.draw_frame(time.elapsed_secs_wrapped());
             }
             _ => {}
         }
     }
 }
 
-fn destroy_render_context(render_context: Res<RenderContext>) {
+fn destroy_render_context(world: &mut World) {
+    let mut render_context = world.remove_resource::<RenderContext>().unwrap();
     unsafe {
         render_context.device.device_wait_idle().unwrap();
 
@@ -185,6 +205,20 @@ fn destroy_render_context(render_context: Res<RenderContext>) {
             .debug_utils_loader
             .destroy_debug_utils_messenger(render_context.debug_callback, None);
 
+        render_context
+            .allocator
+            .free(render_context.index_buffer_allocation)
+            .unwrap();
+
+        render_context
+            .allocator
+            .free(render_context.vertex_buffer_allocation)
+            .unwrap();
+
+        for allocation in render_context.uniform_buffers_allocations.into_iter() {
+            render_context.allocator.free(allocation).unwrap();
+        }
+
         render_context.device.destroy_device(None);
         render_context.instance.destroy_instance(None);
     }
@@ -217,6 +251,9 @@ pub struct RenderContext {
     depth_image_allocation: Allocation,
     depth_image_view: vk::ImageView,
 
+    descriptor_set_layout: vk::DescriptorSetLayout,
+    descriptor_sets: Vec<vk::DescriptorSet>,
+
     graphics_pipeline: vk::Pipeline,
     pipeline_layout: vk::PipelineLayout,
 
@@ -224,6 +261,9 @@ pub struct RenderContext {
     vertex_buffer_allocation: Allocation,
     index_buffer: vk::Buffer,
     index_buffer_allocation: Allocation,
+
+    uniform_buffers: Vec<vk::Buffer>,
+    uniform_buffers_allocations: Vec<Allocation>,
 
     command_pool: vk::CommandPool,
     command_buffers: Vec<vk::CommandBuffer>,
@@ -239,15 +279,14 @@ pub struct RenderContext {
 impl RenderContext {
     fn new(window: Arc<Window>, display_hadle: OwnedDisplayHandle) -> Self {
         unsafe {
-            let entry = ash::Entry::load().unwrap();
+            let entry = ash::Entry::linked();
 
             let mut windowing_extension_names = ash_window::enumerate_required_extensions(
                 display_hadle.display_handle().unwrap().as_raw(),
             )
             .unwrap();
 
-            let mut extension_names =
-                vec![khr::portability_enumeration::NAME, ext::debug_utils::NAME];
+            let mut extension_names = vec![ext::debug_utils::NAME];
 
             let extension_properties = entry.enumerate_instance_extension_properties(None).unwrap();
 
@@ -293,7 +332,6 @@ impl RenderContext {
 
             let create_info = vk::InstanceCreateInfo::default()
                 .application_info(&app_info)
-                .flags(vk::InstanceCreateFlags::ENUMERATE_PORTABILITY_KHR)
                 .enabled_extension_names(&extension_names)
                 .enabled_layer_names(&validation_layers);
 
@@ -346,18 +384,30 @@ impl RenderContext {
                     window.inner_size(),
                 );
 
+            let descriptor_set_layout = Self::create_descriptor_set_layout(&device);
+            let (uniform_buffers, uniform_buffers_allocations) =
+                Self::create_uniform_buffers(&device, &mut allocator);
+            let descriptor_pool = Self::create_descriptor_pool(&device);
+            let descriptor_sets = Self::create_descriptor_sets(
+                &device,
+                descriptor_set_layout,
+                descriptor_pool,
+                &uniform_buffers,
+            );
+
             let (graphics_pipeline, pipeline_layout) = Self::create_graphics_pipeline(
                 &device,
                 swapchain_extent,
                 swapchain_surface_format,
                 depth_format,
+                descriptor_set_layout,
             );
 
             let command_pool = Self::create_command_pool(&device, queue_family_index);
 
-            let (vertex_buffer, vertex_buffer_memory) =
+            let (vertex_buffer, vertex_buffer_allocation) =
                 Self::create_vertex_buffer(&device, &mut allocator, min_memory_map_alignment);
-            let (index_buffer, index_buffer_memory) =
+            let (index_buffer, index_buffer_allocation) =
                 Self::create_index_buffer(&device, &mut allocator, min_memory_map_alignment);
 
             let command_buffers = Self::create_command_buffers(&device, command_pool);
@@ -390,13 +440,18 @@ impl RenderContext {
                 depth_image_allocation,
                 depth_image_view,
 
+                descriptor_set_layout,
+                descriptor_sets,
+
                 graphics_pipeline,
                 pipeline_layout,
 
                 vertex_buffer,
-                vertex_buffer_memory,
+                vertex_buffer_allocation,
                 index_buffer,
-                index_buffer_memory,
+                index_buffer_allocation,
+                uniform_buffers,
+                uniform_buffers_allocations,
 
                 command_pool,
                 command_buffers,
@@ -810,11 +865,27 @@ impl RenderContext {
         (depth_image, allocation, depth_image_view, depth_format)
     }
 
+    fn create_descriptor_set_layout(device: &Device) -> vk::DescriptorSetLayout {
+        let bindings = &[vk::DescriptorSetLayoutBinding::default()
+            .binding(0)
+            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::VERTEX)];
+
+        let create_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(bindings);
+        unsafe {
+            device
+                .create_descriptor_set_layout(&create_info, None)
+                .unwrap()
+        }
+    }
+
     fn create_graphics_pipeline(
         device: &Device,
         swapchain_extent: vk::Extent2D,
         swapchain_format: vk::SurfaceFormatKHR,
         depth_format: vk::Format,
+        descriptor_set_layout: vk::DescriptorSetLayout,
     ) -> (vk::Pipeline, vk::PipelineLayout) {
         let mut shader_code = std::fs::File::open("./shaders/triangle.spv").unwrap();
         let mut buf = vec![];
@@ -873,7 +944,9 @@ impl RenderContext {
             .logic_op(vk::LogicOp::COPY)
             .attachments(attachments);
 
-        let pipeline_layout_create_info = vk::PipelineLayoutCreateInfo::default();
+        let set_layouts = &[descriptor_set_layout];
+        let pipeline_layout_create_info =
+            vk::PipelineLayoutCreateInfo::default().set_layouts(set_layouts);
         let pipeline_layout = unsafe {
             device
                 .create_pipeline_layout(&pipeline_layout_create_info, None)
@@ -938,13 +1011,8 @@ impl RenderContext {
             MemoryLocation::CpuToGpu,
         );
 
-        let copy_record = presser::copy_from_slice_to_offset_with_align(
-            VERTICES,
-            &mut vertex_buffer_allocation,
-            0,
-            min_memory_map_alignment,
-        )
-        .unwrap();
+        let copy_record =
+            presser::copy_from_slice_to_offset(VERTICES, &mut vertex_buffer_allocation, 0).unwrap();
 
         (vertex_buffer, vertex_buffer_allocation)
     }
@@ -963,15 +1031,77 @@ impl RenderContext {
             MemoryLocation::CpuToGpu,
         );
 
-        let copy_record = presser::copy_from_slice_to_offset_with_align(
-            INDICES,
-            &mut index_buffer_allocation,
-            0,
-            min_memory_map_alignment,
-        )
-        .unwrap();
+        let copy_record =
+            presser::copy_from_slice_to_offset(INDICES, &mut index_buffer_allocation, 0).unwrap();
 
         (index_buffer, index_buffer_allocation)
+    }
+
+    fn create_uniform_buffers(
+        device: &Device,
+        allocator: &mut Allocator,
+    ) -> (Vec<vk::Buffer>, Vec<Allocation>) {
+        let size = size_of::<ViewUniform>() as vk::DeviceSize;
+        (0..MAX_FRAMES_IN_FLIGHT)
+            .map(|_| {
+                create_buffer(
+                    device,
+                    allocator,
+                    size,
+                    vk::BufferUsageFlags::UNIFORM_BUFFER,
+                    MemoryLocation::CpuToGpu,
+                )
+            })
+            .unzip()
+    }
+
+    fn create_descriptor_pool(device: &Device) -> vk::DescriptorPool {
+        let descriptor_pool_sizes = &[vk::DescriptorPoolSize::default()
+            .ty(vk::DescriptorType::UNIFORM_BUFFER)
+            .descriptor_count(MAX_FRAMES_IN_FLIGHT)];
+
+        let descriptor_pool_create_info = vk::DescriptorPoolCreateInfo::default()
+            .flags(vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET)
+            .max_sets(MAX_FRAMES_IN_FLIGHT)
+            .pool_sizes(descriptor_pool_sizes);
+
+        unsafe {
+            device
+                .create_descriptor_pool(&descriptor_pool_create_info, None)
+                .unwrap()
+        }
+    }
+
+    fn create_descriptor_sets(
+        device: &Device,
+        descriptor_set_layout: vk::DescriptorSetLayout,
+        descriptor_pool: vk::DescriptorPool,
+        uniform_buffers: &[vk::Buffer],
+    ) -> Vec<vk::DescriptorSet> {
+        let set_layouts = vec![descriptor_set_layout; MAX_FRAMES_IN_FLIGHT as usize];
+        let alloc_info = vk::DescriptorSetAllocateInfo::default()
+            .descriptor_pool(descriptor_pool)
+            .set_layouts(&set_layouts);
+
+        let sets = unsafe { device.allocate_descriptor_sets(&alloc_info).unwrap() };
+
+        for (buffer, set) in uniform_buffers.iter().zip(sets.iter()) {
+            let buffer_info = &[vk::DescriptorBufferInfo::default()
+                .buffer(buffer.clone())
+                .offset(0)
+                .range(size_of::<ViewUniform>() as u64)];
+            let write_desc_set = &[vk::WriteDescriptorSet::default()
+                .dst_set(set.clone())
+                .dst_binding(0)
+                .dst_array_element(0)
+                .descriptor_count(1)
+                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                .buffer_info(buffer_info)];
+
+            unsafe { device.update_descriptor_sets(write_desc_set, &[]) };
+        }
+
+        sets
     }
 
     fn create_command_buffers(
@@ -990,7 +1120,34 @@ impl RenderContext {
         }
     }
 
+    fn update_uniform_buffers(&mut self, time: f32) {
+        let model = Mat4::from_quat(Quat::from_rotation_z(FRAC_PI_2 * time));
+        // TODO: why Z here?
+        let view = Mat4::look_at_lh(vec3(0.0, 2.0, -2.0), Vec3::ZERO, Vec3::Y);
+        let mut projection = Mat4::perspective_lh(
+            FRAC_PI_4,
+            self.swapchain_extent.width as f32 / self.swapchain_extent.height as f32,
+            0.1,
+            10.0,
+        );
+
+        let view_uniform = ViewUniform {
+            model,
+            view,
+            projection,
+        };
+
+        presser::copy_to_offset(
+            &view_uniform,
+            &mut self.uniform_buffers_allocations[self.frame_index],
+            0,
+        )
+        .unwrap();
+    }
+
     fn record_command_buffer(&self, swapchain_image_index: usize) {
+        dbg!(self.swapchain_images.len());
+        dbg!(MAX_FRAMES_IN_FLIGHT);
         unsafe {
             let command_buffer = self.command_buffers[self.frame_index];
 
@@ -1012,14 +1169,14 @@ impl RenderContext {
             self.transition_image_layout(
                 self.depth_image,
                 vk::ImageLayout::UNDEFINED,
-                vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL,
+                vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
                 vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE,
                 vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE,
                 vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS
                     | vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS,
                 vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS
                     | vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS,
-                vk::ImageAspectFlags::DEPTH,
+                vk::ImageAspectFlags::DEPTH | vk::ImageAspectFlags::STENCIL,
             );
 
             let clear_value = vk::ClearValue {
@@ -1092,6 +1249,15 @@ impl RenderContext {
                 &[vk::Rect2D::default()
                     .offset(vk::Offset2D::default())
                     .extent(self.swapchain_extent)],
+            );
+
+            self.device.cmd_bind_descriptor_sets(
+                command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.pipeline_layout,
+                0,
+                &[self.descriptor_sets[self.frame_index]],
+                &[],
             );
 
             self.device
@@ -1190,7 +1356,7 @@ impl RenderContext {
         }
     }
 
-    fn draw_frame(&mut self) {
+    fn draw_frame(&mut self, elapsed_time: f32) {
         unsafe {
             self.device
                 .wait_for_fences(&[self.in_flight_fences[self.frame_index]], true, u64::MAX)
@@ -1215,6 +1381,8 @@ impl RenderContext {
             self.device
                 .reset_fences(&[self.in_flight_fences[self.frame_index]])
                 .unwrap();
+
+            self.update_uniform_buffers(elapsed_time);
 
             self.device
                 .reset_command_buffer(

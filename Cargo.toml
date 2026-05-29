@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-ash = "0.38.0"
+ash = { version = "0.38.0", features = ["linked"] }
 ash-window = "0.13.0"
 gpu-allocator = "0.28.0"
 bevy_app = "0.18.1"
@@ -19,3 +19,4 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 winit = { version = "0.30.13", features = ["rwh_06"] }
 presser = "0.3.1"
+bevy_time = "0.18.1"

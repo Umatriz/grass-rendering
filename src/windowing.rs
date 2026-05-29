@@ -128,6 +128,11 @@ impl ApplicationHandler for WinitAppRunnerState {
             }
             WindowEvent::RedrawRequested => {
                 self.app.update();
+                self.app
+                    .world()
+                    .resource::<AppWindows>()
+                    .primary
+                    .request_redraw();
             }
             event => {
                 self.app
