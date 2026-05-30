@@ -155,72 +155,74 @@ fn resize(
 }
 
 fn destroy_render_context(world: &mut World) {
-    let mut render_context = world.remove_resource::<RenderContext>().unwrap();
+    let mut rc = world.remove_resource::<RenderContext>().unwrap();
     unsafe {
-        render_context.device.device_wait_idle().unwrap();
+        rc.device.device_wait_idle().unwrap();
 
-        for fence in &render_context.in_flight_fences {
-            render_context.device.destroy_fence(*fence, None);
+        for fence in &rc.in_flight_fences {
+            rc.device.destroy_fence(*fence, None);
         }
 
-        for semaphore in &render_context.present_complete_semaphores {
-            render_context.device.destroy_semaphore(*semaphore, None);
+        for semaphore in &rc.present_complete_semaphores {
+            rc.device.destroy_semaphore(*semaphore, None);
         }
 
-        for semaphore in &render_context.render_finished_semaphores {
-            render_context.device.destroy_semaphore(*semaphore, None);
+        for semaphore in &rc.render_finished_semaphores {
+            rc.device.destroy_semaphore(*semaphore, None);
         }
 
-        render_context
-            .device
-            .destroy_command_pool(render_context.command_pool, None);
+        rc.device.destroy_command_pool(rc.command_pool, None);
 
-        render_context
-            .device
-            .destroy_pipeline_layout(render_context.pipeline_layout, None);
+        rc.device.destroy_pipeline_layout(rc.pipeline_layout, None);
 
-        render_context
-            .device
-            .destroy_pipeline(render_context.graphics_pipeline, None);
+        rc.device.destroy_pipeline(rc.graphics_pipeline, None);
 
-        for image_view in &render_context.swapchain_image_views {
-            render_context.device.destroy_image_view(*image_view, None);
+        for image_view in &rc.swapchain_image_views {
+            rc.device.destroy_image_view(*image_view, None);
         }
 
         // for image in &render_context.swapchain_images {
         //     render_context.device.destroy_image(*image, None);
         // }
 
-        render_context
-            .swapchain
-            .1
-            .destroy_swapchain(render_context.swapchain.0, None);
+        rc.swapchain.1.destroy_swapchain(rc.swapchain.0, None);
 
-        render_context
-            .surface
-            .1
-            .destroy_surface(render_context.surface.0, None);
+        rc.surface.1.destroy_surface(rc.surface.0, None);
 
-        render_context
-            .debug_utils_loader
-            .destroy_debug_utils_messenger(render_context.debug_callback, None);
+        rc.debug_utils_loader
+            .destroy_debug_utils_messenger(rc.debug_callback, None);
 
-        render_context
-            .allocator
-            .free(render_context.index_buffer_allocation)
-            .unwrap();
+        rc.allocator.free(rc.depth_image_allocation).unwrap();
+        rc.device.destroy_image(rc.depth_image, None);
+        rc.device.destroy_image_view(rc.depth_image_view, None);
 
-        render_context
-            .allocator
-            .free(render_context.vertex_buffer_allocation)
-            .unwrap();
+        rc.allocator.free(rc.index_buffer_allocation).unwrap();
+        rc.device.destroy_buffer(rc.index_buffer, None);
 
-        for allocation in render_context.uniform_buffers_allocations.into_iter() {
-            render_context.allocator.free(allocation).unwrap();
+        rc.allocator.free(rc.vertex_buffer_allocation).unwrap();
+        rc.device.destroy_buffer(rc.vertex_buffer, None);
+
+        for (allocation, buffer) in rc
+            .uniform_buffers_allocations
+            .into_iter()
+            .zip(rc.uniform_buffers)
+        {
+            rc.allocator.free(allocation).unwrap();
+            rc.device.destroy_buffer(buffer, None);
         }
 
-        render_context.device.destroy_device(None);
-        render_context.instance.destroy_instance(None);
+        rc.device
+            .free_descriptor_sets(rc.descriptor_pool, &rc.descriptor_sets)
+            .unwrap();
+        rc.device
+            .destroy_descriptor_set_layout(rc.descriptor_set_layout, None);
+        rc.device.destroy_descriptor_pool(rc.descriptor_pool, None);
+
+        // Drop allocator before destroying device because it holds memory
+        drop(rc.allocator);
+
+        rc.device.destroy_device(None);
+        rc.instance.destroy_instance(None);
     }
 }
 
@@ -253,6 +255,7 @@ pub struct RenderContext {
 
     descriptor_set_layout: vk::DescriptorSetLayout,
     descriptor_sets: Vec<vk::DescriptorSet>,
+    descriptor_pool: vk::DescriptorPool,
 
     graphics_pipeline: vk::Pipeline,
     pipeline_layout: vk::PipelineLayout,
@@ -442,6 +445,7 @@ impl RenderContext {
 
                 descriptor_set_layout,
                 descriptor_sets,
+                descriptor_pool,
 
                 graphics_pipeline,
                 pipeline_layout,
@@ -1146,8 +1150,6 @@ impl RenderContext {
     }
 
     fn record_command_buffer(&self, swapchain_image_index: usize) {
-        dbg!(self.swapchain_images.len());
-        dbg!(MAX_FRAMES_IN_FLIGHT);
         unsafe {
             let command_buffer = self.command_buffers[self.frame_index];
 
