@@ -1,9 +1,10 @@
 use std::{
     fs::{File, OpenOptions},
-    io::Write,
+    io::{self, Write},
+    process::{Command, Output},
 };
 
-use bevy_app::{App, AppExit};
+use bevy_app::{App, AppExit, PreStartup};
 use bevy_time::TimePlugin;
 use rendering::RenderingPlugin;
 use tracing::{Level, error, info, warn};
@@ -52,5 +53,35 @@ fn main() -> AppExit {
     App::new()
         .add_plugins(TimePlugin)
         .add_plugins((WindowingPlugin, RenderingPlugin))
+        .add_systems(PreStartup, compile_shaders)
         .run()
+}
+
+fn compile_shaders() {
+    compile_slang("shaders/triangle.slang", &["vertMain", "fragMain"]).unwrap();
+}
+
+fn compile_slang(input: &str, entries: &[&str]) -> io::Result<()> {
+    let mut output = input.strip_suffix(".slang").map(|s| s.to_string()).unwrap();
+    output.push_str(".spv");
+
+    info!("Compiling {input}");
+    Command::new("slangc")
+        .arg(input)
+        .args([
+            "-target",
+            "spirv",
+            "-profile",
+            "spirv_1_4",
+            "-emit-spirv-directly",
+            "-fvk-use-entrypoint-name",
+        ])
+        .args(entries.iter().flat_map(|entry| ["-entry", entry]))
+        .arg("-o")
+        .arg(output)
+        .stderr(io::stderr())
+        .stdout(io::stdout())
+        .status()?;
+
+    Ok(())
 }

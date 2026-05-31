@@ -41,6 +41,8 @@ pub struct ViewUniform {
     model: Mat4,
     view: Mat4,
     projection: Mat4,
+
+    light_pos: Vec3,
 }
 
 #[derive(Pod, Zeroable, Clone, Copy, Debug)]
@@ -48,6 +50,7 @@ pub struct ViewUniform {
 pub struct Vertex {
     pos: Vec3,
     color: Vec3,
+    normal: Vec3,
 }
 
 impl Vertex {
@@ -58,7 +61,7 @@ impl Vertex {
             .input_rate(vk::VertexInputRate::VERTEX)
     }
 
-    fn get_attribute_descriptions() -> [vk::VertexInputAttributeDescription; 2] {
+    fn get_attribute_descriptions() -> [vk::VertexInputAttributeDescription; 3] {
         [
             vk::VertexInputAttributeDescription::default()
                 .location(0)
@@ -70,6 +73,11 @@ impl Vertex {
                 .binding(0)
                 .format(vk::Format::R32G32B32_SFLOAT)
                 .offset(mem::offset_of!(Vertex, color) as u32),
+            vk::VertexInputAttributeDescription::default()
+                .location(2)
+                .binding(0)
+                .format(vk::Format::R32G32B32_SFLOAT)
+                .offset(mem::offset_of!(Vertex, normal) as u32),
         ]
     }
 }
@@ -113,11 +121,17 @@ pub struct CleanUp;
 pub struct Model(tobj::Model);
 
 fn load_model(mut commands: Commands) {
-    let (mut models, materials) =
-        tobj::load_obj("colored cube.obj", &tobj::LoadOptions::default()).unwrap();
+    let (mut models, materials) = tobj::load_obj(
+        "monkey.obj",
+        &tobj::LoadOptions {
+            triangulate: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
 
-    println!("{models:#?}");
-    println!("{materials:#?}");
+    // println!("{models:#?}");
+    // println!("{materials:#?}");
 
     commands.insert_resource(Model(models.pop().unwrap()));
 }
@@ -879,7 +893,7 @@ impl RenderContext {
             .binding(0)
             .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
             .descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::VERTEX)];
+            .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)];
 
         let create_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(bindings);
         unsafe {
@@ -934,7 +948,7 @@ impl RenderContext {
             .depth_clamp_enable(false)
             .rasterizer_discard_enable(false)
             .polygon_mode(vk::PolygonMode::FILL)
-            .cull_mode(vk::CullModeFlags::NONE)
+            .cull_mode(vk::CullModeFlags::BACK)
             .front_face(vk::FrontFace::CLOCKWISE)
             .depth_bias_enable(false)
             .line_width(1.0);
@@ -1019,17 +1033,23 @@ impl RenderContext {
                 model.mesh.positions[3 * i + 2],
             );
 
-            let color = vec3(
-                model.mesh.vertex_color[3 * i],
-                model.mesh.vertex_color[3 * i + 1],
-                model.mesh.vertex_color[3 * i + 2],
-            );
+            let color = model
+                .mesh
+                .vertex_color
+                .get((3 * i)..=(3 * i + 2))
+                .map(Vec3::from_slice)
+                .unwrap_or(Vec3::splat(1.0));
 
-            let vertex = Vertex { pos, color };
+            let normal = model
+                .mesh
+                .normals
+                .get((3 * i)..=(3 * i + 2))
+                .map(Vec3::from_slice)
+                .expect("normals are empty");
+
+            let vertex = Vertex { pos, color, normal };
             vertices.push(vertex);
         }
-
-        dbg!(&vertices);
 
         let size = dbg!(size_of_val(vertices.as_slice())) as u64;
         let (vertex_buffer, mut vertex_buffer_allocation) = create_buffer(
@@ -1060,8 +1080,6 @@ impl RenderContext {
         //     next_face = end;
         // }
         let indices = model.mesh.indices.as_slice();
-
-        dbg!(indices);
 
         let size = size_of_val(indices) as u64;
         let (index_buffer, mut index_buffer_allocation) = create_buffer(
@@ -1164,13 +1182,15 @@ impl RenderContext {
     }
 
     fn update_uniform_buffers(&mut self, time: f32) {
-        let model = Mat4::from_quat(Quat::from_rotation_y(FRAC_PI_2 * time));
+        let model = Mat4::from_quat(
+            Quat::from_rotation_z(FRAC_PI_2 * time) * Quat::from_rotation_y(FRAC_PI_2 * time),
+        );
         let view = Mat4::look_at_rh(vec3(0.0, 4.0, -4.0), Vec3::ZERO, Vec3::Y);
         let mut projection = Mat4::perspective_rh(
             FRAC_PI_4,
             self.swapchain_extent.width as f32 / self.swapchain_extent.height as f32,
-            0.1,
-            10.0,
+            0.0001,
+            1000.0,
         );
         projection.y_axis *= -1.0;
 
@@ -1178,6 +1198,7 @@ impl RenderContext {
             model,
             view,
             projection,
+            light_pos: vec3(3.0, 5.0, 0.0),
         };
 
         presser::copy_to_offset(
