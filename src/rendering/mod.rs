@@ -43,10 +43,10 @@ pub struct ViewUniform {
     projection: Mat4,
 }
 
-#[derive(Pod, Zeroable, Clone, Copy)]
+#[derive(Pod, Zeroable, Clone, Copy, Debug)]
 #[repr(C)]
 pub struct Vertex {
-    pos: Vec2,
+    pos: Vec3,
     color: Vec3,
 }
 
@@ -63,7 +63,7 @@ impl Vertex {
             vk::VertexInputAttributeDescription::default()
                 .location(0)
                 .binding(0)
-                .format(vk::Format::R32G32_SFLOAT)
+                .format(vk::Format::R32G32B32_SFLOAT)
                 .offset(mem::offset_of!(Vertex, pos) as u32),
             vk::VertexInputAttributeDescription::default()
                 .location(1)
@@ -74,26 +74,26 @@ impl Vertex {
     }
 }
 
-const VERTICES: &[Vertex] = &[
-    Vertex {
-        pos: vec2(-0.5, -0.5),
-        color: vec3(1.0, 0.0, 0.0),
-    },
-    Vertex {
-        pos: vec2(0.5, -0.5),
-        color: vec3(0.0, 1.0, 0.0),
-    },
-    Vertex {
-        pos: vec2(0.5, 0.5),
-        color: vec3(0.0, 0.0, 1.0),
-    },
-    Vertex {
-        pos: vec2(-0.5, 0.5),
-        color: vec3(1.0, 1.0, 1.0),
-    },
-];
+// const VERTICES: &[Vertex] = &[
+//     Vertex {
+//         pos: vec2(-0.5, -0.5),
+//         color: vec3(1.0, 0.0, 0.0),
+//     },
+//     Vertex {
+//         pos: vec2(0.5, -0.5),
+//         color: vec3(0.0, 1.0, 0.0),
+//     },
+//     Vertex {
+//         pos: vec2(0.5, 0.5),
+//         color: vec3(0.0, 0.0, 1.0),
+//     },
+//     Vertex {
+//         pos: vec2(-0.5, 0.5),
+//         color: vec3(1.0, 1.0, 1.0),
+//     },
+// ];
 
-const INDICES: &[u16] = &[0, 1, 2, 2, 3, 0];
+// const INDICES: &[u16] = &[0, 1, 2, 2, 3, 0];
 
 pub struct RenderingPlugin;
 
@@ -126,8 +126,10 @@ fn setup_render_context(
     mut commands: Commands,
     windows: Res<AppWindows>,
     display_handle: Res<WinitOwnedDisplayHandle>,
+    model: Res<Model>,
 ) {
-    let render_context = RenderContext::new(windows.primary.clone(), display_handle.0.clone());
+    let render_context =
+        RenderContext::new(windows.primary.clone(), display_handle.0.clone(), &model.0);
     commands.insert_resource(render_context);
     info!("Render context was successfully created");
 }
@@ -264,6 +266,7 @@ pub struct RenderContext {
     vertex_buffer_allocation: Allocation,
     index_buffer: vk::Buffer,
     index_buffer_allocation: Allocation,
+    index_count: usize,
 
     uniform_buffers: Vec<vk::Buffer>,
     uniform_buffers_allocations: Vec<Allocation>,
@@ -280,7 +283,7 @@ pub struct RenderContext {
 }
 
 impl RenderContext {
-    fn new(window: Arc<Window>, display_hadle: OwnedDisplayHandle) -> Self {
+    fn new(window: Arc<Window>, display_hadle: OwnedDisplayHandle, model: &tobj::Model) -> Self {
         unsafe {
             let entry = ash::Entry::linked();
 
@@ -409,9 +412,9 @@ impl RenderContext {
             let command_pool = Self::create_command_pool(&device, queue_family_index);
 
             let (vertex_buffer, vertex_buffer_allocation) =
-                Self::create_vertex_buffer(&device, &mut allocator, min_memory_map_alignment);
+                Self::create_vertex_buffer(&device, &mut allocator, &model);
             let (index_buffer, index_buffer_allocation) =
-                Self::create_index_buffer(&device, &mut allocator, min_memory_map_alignment);
+                Self::create_index_buffer(&device, &mut allocator, &model);
 
             let command_buffers = Self::create_command_buffers(&device, command_pool);
             let (present_complete_semaphores, render_finished_semaphores, in_flight_fences) =
@@ -454,6 +457,8 @@ impl RenderContext {
                 vertex_buffer_allocation,
                 index_buffer,
                 index_buffer_allocation,
+                index_count: model.mesh.indices.len(),
+
                 uniform_buffers,
                 uniform_buffers_allocations,
 
@@ -929,7 +934,7 @@ impl RenderContext {
             .depth_clamp_enable(false)
             .rasterizer_discard_enable(false)
             .polygon_mode(vk::PolygonMode::FILL)
-            .cull_mode(vk::CullModeFlags::BACK)
+            .cull_mode(vk::CullModeFlags::NONE)
             .front_face(vk::FrontFace::CLOCKWISE)
             .depth_bias_enable(false)
             .line_width(1.0);
@@ -1004,9 +1009,29 @@ impl RenderContext {
     fn create_vertex_buffer(
         device: &Device,
         allocator: &mut Allocator,
-        min_memory_map_alignment: usize,
+        model: &tobj::Model,
     ) -> (vk::Buffer, Allocation) {
-        let size = size_of_val(VERTICES) as u64;
+        let mut vertices = vec![];
+        for i in 0..model.mesh.positions.len() / 3 {
+            let pos = vec3(
+                model.mesh.positions[3 * i],
+                model.mesh.positions[3 * i + 1],
+                model.mesh.positions[3 * i + 2],
+            );
+
+            let color = vec3(
+                model.mesh.vertex_color[3 * i],
+                model.mesh.vertex_color[3 * i + 1],
+                model.mesh.vertex_color[3 * i + 2],
+            );
+
+            let vertex = Vertex { pos, color };
+            vertices.push(vertex);
+        }
+
+        dbg!(&vertices);
+
+        let size = dbg!(size_of_val(vertices.as_slice())) as u64;
         let (vertex_buffer, mut vertex_buffer_allocation) = create_buffer(
             device,
             allocator,
@@ -1016,7 +1041,8 @@ impl RenderContext {
         );
 
         let copy_record =
-            presser::copy_from_slice_to_offset(VERTICES, &mut vertex_buffer_allocation, 0).unwrap();
+            presser::copy_from_slice_to_offset(&vertices, &mut vertex_buffer_allocation, 0)
+                .unwrap();
 
         (vertex_buffer, vertex_buffer_allocation)
     }
@@ -1024,9 +1050,20 @@ impl RenderContext {
     fn create_index_buffer(
         device: &Device,
         allocator: &mut Allocator,
-        min_memory_map_alignment: usize,
+        model: &tobj::Model,
     ) -> (vk::Buffer, Allocation) {
-        let size = size_of_val(INDICES) as u64;
+        // let mut next_face = 0;
+        // for f in 0..mesh.face_arities.len() {
+        //     let end = next_face + mesh.face_arities[f] as usize;
+        //     let face_indices: Vec<_> = mesh.indices[next_face..end].iter().collect();
+        //     println!("    face[{}] = {:?}", f, face_indices);
+        //     next_face = end;
+        // }
+        let indices = model.mesh.indices.as_slice();
+
+        dbg!(indices);
+
+        let size = size_of_val(indices) as u64;
         let (index_buffer, mut index_buffer_allocation) = create_buffer(
             device,
             allocator,
@@ -1035,8 +1072,10 @@ impl RenderContext {
             MemoryLocation::CpuToGpu,
         );
 
+        dbg!(indices.len());
         let copy_record =
-            presser::copy_from_slice_to_offset(INDICES, &mut index_buffer_allocation, 0).unwrap();
+            presser::copy_from_slice_to_offset(indices, &mut index_buffer_allocation, 0).unwrap();
+        dbg!(copy_record);
 
         (index_buffer, index_buffer_allocation)
     }
@@ -1125,15 +1164,15 @@ impl RenderContext {
     }
 
     fn update_uniform_buffers(&mut self, time: f32) {
-        let model = Mat4::from_quat(Quat::from_rotation_z(FRAC_PI_2 * time));
-        // TODO: why Z here?
-        let view = Mat4::look_at_lh(vec3(0.0, 2.0, -2.0), Vec3::ZERO, Vec3::Y);
-        let mut projection = Mat4::perspective_lh(
+        let model = Mat4::from_quat(Quat::from_rotation_y(FRAC_PI_2 * time));
+        let view = Mat4::look_at_rh(vec3(0.0, 4.0, -4.0), Vec3::ZERO, Vec3::Y);
+        let mut projection = Mat4::perspective_rh(
             FRAC_PI_4,
             self.swapchain_extent.width as f32 / self.swapchain_extent.height as f32,
             0.1,
             10.0,
         );
+        projection.y_axis *= -1.0;
 
         let view_uniform = ViewUniform {
             model,
@@ -1231,7 +1270,7 @@ impl RenderContext {
                 command_buffer,
                 self.index_buffer,
                 0,
-                vk::IndexType::UINT16,
+                vk::IndexType::UINT32,
             );
 
             self.device.cmd_set_viewport(
@@ -1263,7 +1302,7 @@ impl RenderContext {
             );
 
             self.device
-                .cmd_draw_indexed(command_buffer, INDICES.len() as u32, 1, 0, 0, 0);
+                .cmd_draw_indexed(command_buffer, self.index_count as u32, 1, 0, 0, 0);
 
             self.device.cmd_end_rendering(command_buffer);
 
