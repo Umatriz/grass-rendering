@@ -1,21 +1,21 @@
 use std::{
     fs::{File, OpenOptions},
-    io::{self, Write},
-    process::{Command, Output},
+    io,
+    process::Command,
 };
 
 use bevy_app::{App, AppExit, PreStartup};
 use bevy_time::TimePlugin;
 use rendering::RenderingPlugin;
 use tracing::{Level, error, info, warn};
-use tracing_subscriber::{EnvFilter, Layer, filter, layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_subscriber::{filter, layer::SubscriberExt, util::SubscriberInitExt};
 use windowing::WindowingPlugin;
 
 mod rendering;
 mod windowing;
 
 fn main() -> AppExit {
-    let mut file = OpenOptions::new()
+    let file = OpenOptions::new()
         .create(true)
         .truncate(true)
         .write(true)

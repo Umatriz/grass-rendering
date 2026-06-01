@@ -2,9 +2,8 @@ use std::{
     borrow::Cow,
     f32::consts::{FRAC_PI_2, FRAC_PI_4},
     ffi::CStr,
-    fs::File,
     io::Read,
-    mem, ptr,
+    mem,
     sync::Arc,
 };
 
@@ -18,15 +17,15 @@ use bevy_ecs::{
     world::World,
 };
 use bevy_time::Time;
-use bytemuck::{Pod, Zeroable, allocation};
-use glam::{Mat4, Quat, Vec2, Vec3, vec2, vec3};
+use bytemuck::{Pod, Zeroable};
+use glam::{Mat4, Quat, Vec3, vec3};
 use gpu_allocator::{
     AllocationSizes, AllocatorDebugSettings, MemoryLocation,
     vulkan::{Allocation, AllocationCreateDesc, AllocationScheme, Allocator, AllocatorCreateDesc},
 };
 use itertools::Itertools;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
-use tracing::{Level, error, event, info, span, trace, trace_span, warn};
+use tracing::{error, info, trace, warn};
 use winit::{
     dpi::PhysicalSize, event::WindowEvent, event_loop::OwnedDisplayHandle, window::Window,
 };
@@ -121,7 +120,7 @@ pub struct CleanUp;
 pub struct Model(tobj::Model);
 
 fn load_model(mut commands: Commands) {
-    let (mut models, materials) = tobj::load_obj(
+    let (mut models, _materials) = tobj::load_obj(
         "monkey.obj",
         &tobj::LoadOptions {
             triangulate: true,
@@ -148,14 +147,14 @@ fn setup_render_context(
     info!("Render context was successfully created");
 }
 
-fn render(mut render_context: ResMut<RenderContext>, windows: Res<AppWindows>, time: Res<Time>) {
+fn render(mut render_context: ResMut<RenderContext>, _windows: Res<AppWindows>, time: Res<Time>) {
     render_context.draw_frame(time.elapsed_secs_wrapped());
 }
 
 fn resize(
     mut render_context: ResMut<RenderContext>,
     mut winit_events: MessageReader<RawWinitWindowEvent>,
-    windows: Res<AppWindows>,
+    _windows: Res<AppWindows>,
     time: Res<Time>,
 ) {
     for event in winit_events.read() {
@@ -301,12 +300,12 @@ impl RenderContext {
         unsafe {
             let entry = ash::Entry::linked();
 
-            let mut windowing_extension_names = ash_window::enumerate_required_extensions(
+            let windowing_extension_names = ash_window::enumerate_required_extensions(
                 display_hadle.display_handle().unwrap().as_raw(),
             )
             .unwrap();
 
-            let mut extension_names = vec![ext::debug_utils::NAME];
+            let extension_names = vec![ext::debug_utils::NAME];
 
             let extension_properties = entry.enumerate_instance_extension_properties(None).unwrap();
 
@@ -614,7 +613,7 @@ impl RenderContext {
         unsafe {
             let queue_family_properties =
                 instance.get_physical_device_queue_family_properties(physical_device);
-            let (graphics_index, graphics_queue_family_property) = queue_family_properties
+            let (graphics_index, _graphics_queue_family_property) = queue_family_properties
                 .iter()
                 .enumerate()
                 .find(|(idx, props)| {
@@ -685,7 +684,7 @@ impl RenderContext {
             let swapchain_extent = Self::choose_swapchain_extent(surface_capabilities, size);
             let min_image_count = Self::choose_swapchain_min_image_count(surface_capabilities);
 
-            let present_modes = surface
+            let _present_modes = surface
                 .1
                 .get_physical_device_surface_present_modes(physical_device, surface.0)
                 .unwrap();
@@ -905,7 +904,7 @@ impl RenderContext {
 
     fn create_graphics_pipeline(
         device: &Device,
-        swapchain_extent: vk::Extent2D,
+        _swapchain_extent: vk::Extent2D,
         swapchain_format: vk::SurfaceFormatKHR,
         depth_format: vk::Format,
         descriptor_set_layout: vk::DescriptorSetLayout,
@@ -1026,7 +1025,9 @@ impl RenderContext {
         model: &tobj::Model,
     ) -> (vk::Buffer, Allocation) {
         let mut vertices = vec![];
-        for i in 0..model.mesh.positions.len() / 3 {
+        dbg!(model.mesh.normals.len());
+        dbg!(model.mesh.positions.len());
+        for i in 0..model.mesh.indices.len() {
             let pos = vec3(
                 model.mesh.positions[3 * i],
                 model.mesh.positions[3 * i + 1],
@@ -1060,7 +1061,7 @@ impl RenderContext {
             MemoryLocation::CpuToGpu,
         );
 
-        let copy_record =
+        let _copy_record =
             presser::copy_from_slice_to_offset(&vertices, &mut vertex_buffer_allocation, 0)
                 .unwrap();
 
@@ -1604,45 +1605,47 @@ unsafe extern "system" fn vulkan_debug_callback(
     p_callback_data: *const vk::DebugUtilsMessengerCallbackDataEXT<'_>,
     _user_data: *mut std::os::raw::c_void,
 ) -> vk::Bool32 {
-    let callback_data = *p_callback_data;
-    let message_id_number = callback_data.message_id_number;
+    unsafe {
+        let callback_data = *p_callback_data;
+        let message_id_number = callback_data.message_id_number;
 
-    let message_id_name = if callback_data.p_message_id_name.is_null() {
-        Cow::from("")
-    } else {
-        unsafe { CStr::from_ptr(callback_data.p_message_id_name) }.to_string_lossy()
-    };
+        let message_id_name = if callback_data.p_message_id_name.is_null() {
+            Cow::from("")
+        } else {
+            CStr::from_ptr(callback_data.p_message_id_name).to_string_lossy()
+        };
 
-    let message = if callback_data.p_message.is_null() {
-        Cow::from("")
-    } else {
-        unsafe { CStr::from_ptr(callback_data.p_message) }.to_string_lossy()
-    };
+        let message = if callback_data.p_message.is_null() {
+            Cow::from("")
+        } else {
+            CStr::from_ptr(callback_data.p_message).to_string_lossy()
+        };
 
-    // println!(
-    //     "{message_severity:?}:\n{message_type:?} [{message_id_name} ({message_id_number})] : {message}\n",
-    // );
+        // println!(
+        //     "{message_severity:?}:\n{message_type:?} [{message_id_name} ({message_id_number})] : {message}\n",
+        // );
 
-    // let span = span!(Level::ERROR, "VULKAN");
-    // let _guard = span.enter();
+        // let span = span!(Level::ERROR, "VULKAN");
+        // let _guard = span.enter();
 
-    match message_severity {
-        vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE => {
-            trace!(target: "VULKAN", "{message_type:?} [{message_id_name} {message_id_number}]: {message}")
-        }
-        vk::DebugUtilsMessageSeverityFlagsEXT::INFO => {
-            info!(target: "VULKAN", "{message_type:?} [{message_id_name} {message_id_number}]: {message}")
-        }
-        vk::DebugUtilsMessageSeverityFlagsEXT::WARNING => {
-            warn!(target: "VULKAN", "{message_type:?} [{message_id_name} {message_id_number}]: {message}")
-        }
-        vk::DebugUtilsMessageSeverityFlagsEXT::ERROR => {
-            error!(target: "VULKAN", "{message_type:?} [{message_id_name} {message_id_number}]: {message}");
-        }
-        _ => {
-            warn!(target: "VULKAN", "{message_type:?} [{message_id_name} {message_id_number}]: {message}")
-        }
-    };
+        match message_severity {
+            vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE => {
+                trace!(target: "VULKAN", "{message_type:?} [{message_id_name} {message_id_number}]: {message}")
+            }
+            vk::DebugUtilsMessageSeverityFlagsEXT::INFO => {
+                info!(target: "VULKAN", "{message_type:?} [{message_id_name} {message_id_number}]: {message}")
+            }
+            vk::DebugUtilsMessageSeverityFlagsEXT::WARNING => {
+                warn!(target: "VULKAN", "{message_type:?} [{message_id_name} {message_id_number}]: {message}")
+            }
+            vk::DebugUtilsMessageSeverityFlagsEXT::ERROR => {
+                error!(target: "VULKAN", "{message_type:?} [{message_id_name} {message_id_number}]: {message}");
+            }
+            _ => {
+                warn!(target: "VULKAN", "{message_type:?} [{message_id_name} {message_id_number}]: {message}")
+            }
+        };
 
-    vk::FALSE
+        vk::FALSE
+    }
 }

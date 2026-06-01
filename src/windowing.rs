@@ -1,7 +1,7 @@
 use std::{borrow::Cow, collections::HashMap, sync::Arc};
 
 use bevy_app::{App, AppExit, Plugin, PluginsState};
-use bevy_ecs::{event::Event, message::Message, resource::Resource};
+use bevy_ecs::{message::Message, resource::Resource};
 use tracing::error;
 use winit::{
     application::ApplicationHandler,
@@ -11,7 +11,7 @@ use winit::{
     window::{Window, WindowAttributes, WindowId},
 };
 
-use crate::rendering::{CleanUp, RenderContext};
+use crate::rendering::CleanUp;
 
 pub struct WindowingPlugin;
 
@@ -142,5 +142,5 @@ impl ApplicationHandler for WinitAppRunnerState {
         }
     }
 
-    fn exiting(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {}
+    fn exiting(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop) {}
 }
