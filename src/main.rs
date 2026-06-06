@@ -6,12 +6,13 @@ use std::{
 
 use bevy_app::{App, AppExit, PreStartup};
 use bevy_time::TimePlugin;
-use rendering::RenderingPlugin;
+use rendering::{RenderingPlugin, camera::CameraPlugin};
 use tracing::{Level, error, info, warn};
 use tracing_subscriber::{filter, layer::SubscriberExt, util::SubscriberInitExt};
 use windowing::WindowingPlugin;
 
 mod rendering;
+mod transform;
 mod windowing;
 
 fn main() -> AppExit {
@@ -44,15 +45,13 @@ fn main() -> AppExit {
         )
         .init();
 
-    File::create("CRASHED.txt").unwrap();
-
     info!("Logging is successfully initialized");
     error!("Error!");
     warn!("Warn!");
 
     App::new()
         .add_plugins(TimePlugin)
-        .add_plugins((WindowingPlugin, RenderingPlugin))
+        .add_plugins((WindowingPlugin, RenderingPlugin, CameraPlugin))
         .add_systems(PreStartup, compile_shaders)
         .run()
 }

@@ -10,8 +10,8 @@ gpu-allocator = "0.28.0"
 bevy_app = "0.18.1"
 bevy_ecs = "0.18.1"
 bytemuck = "1.25.0"
-glam = { version = "0.32.1", features = ["bytemuck"] }
-gltf = "1.4.1"
+glam = { version = "0.32.1", features = ["bytemuck", "mint"] }
+gltf = { version = "1.4.1", features = ["utils"] }
 itertools = "0.14.0"
 raw-window-handle = "0.6.2"
 tobj = "4.0.3"
@@ -20,3 +20,4 @@ tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 winit = { version = "0.30.13", features = ["rwh_06"] }
 presser = "0.3.1"
 bevy_time = "0.18.1"
+dolly = "0.6.0"

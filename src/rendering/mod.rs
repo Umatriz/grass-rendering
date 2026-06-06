@@ -1,6 +1,6 @@
 use std::{
     borrow::Cow,
-    f32::consts::{FRAC_PI_2, FRAC_PI_4},
+    f32::consts::{FRAC_PI_2, FRAC_PI_4, FRAC_PI_8},
     ffi::CStr,
     io::Read,
     mem,
@@ -13,24 +13,35 @@ use bevy_ecs::{
     message::MessageReader,
     resource::Resource,
     schedule::{IntoScheduleConfigs, ScheduleLabel},
-    system::{Commands, Res, ResMut},
+    system::{Commands, Res, ResMut, Single},
     world::World,
 };
 use bevy_time::Time;
 use bytemuck::{Pod, Zeroable};
+use camera::Camera;
 use glam::{Mat4, Quat, Vec3, vec3};
+use gltf::{
+    accessor::{self, DataType, Dimensions},
+    json::camera::Type,
+    mesh::util::{ReadIndices, ReadPositions},
+};
 use gpu_allocator::{
     AllocationSizes, AllocatorDebugSettings, MemoryLocation,
     vulkan::{Allocation, AllocationCreateDesc, AllocationScheme, Allocator, AllocatorCreateDesc},
 };
-use itertools::Itertools;
+use itertools::{Itertools, multizip};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use tracing::{error, info, trace, warn};
 use winit::{
     dpi::PhysicalSize, event::WindowEvent, event_loop::OwnedDisplayHandle, window::Window,
 };
 
-use crate::windowing::{AppWindows, RawWinitWindowEvent, WinitOwnedDisplayHandle};
+use crate::{
+    transform::Transform,
+    windowing::{AppWindows, RawWinitWindowEvent, WinitOwnedDisplayHandle},
+};
+
+pub mod camera;
 
 pub const MAX_FRAMES_IN_FLIGHT: u32 = 2;
 
@@ -40,7 +51,7 @@ pub struct ViewUniform {
     model: Mat4,
     view: Mat4,
     projection: Mat4,
-
+    eye_pos: Vec3,
     light_pos: Vec3,
 }
 
@@ -117,22 +128,59 @@ impl Plugin for RenderingPlugin {
 pub struct CleanUp;
 
 #[derive(Resource)]
-pub struct Model(tobj::Model);
+pub struct Model {
+    vertices: Vec<Vertex>,
+    indices: Vec<u32>,
+}
 
 fn load_model(mut commands: Commands) {
-    let (mut models, _materials) = tobj::load_obj(
-        "monkey.obj",
-        &tobj::LoadOptions {
-            triangulate: true,
-            ..Default::default()
-        },
-    )
-    .unwrap();
+    let (document, buffers, images) = gltf::import("monkey.glb").unwrap();
+    let mesh = document
+        .meshes()
+        .find(|m| m.name() == Some("Suzanne"))
+        .unwrap();
 
-    // println!("{models:#?}");
-    // println!("{materials:#?}");
+    let mut model = Model {
+        vertices: vec![],
+        indices: vec![],
+    };
 
-    commands.insert_resource(Model(models.pop().unwrap()));
+    for primitive in mesh.primitives() {
+        let reader = primitive.reader(|b| Some(&buffers[b.index()]));
+        let mut indices = vec![];
+        if let Some(ReadIndices::U16(iter)) = reader.read_indices() {
+            for v in iter {
+                indices.push(v);
+            }
+        }
+        model.indices.extend(indices.into_iter().map(|i| i as u32));
+
+        let mut positions = vec![];
+        if let Some(iter) = reader.read_positions() {
+            for p in iter {
+                positions.push(Vec3::from_slice(&p));
+            }
+        }
+
+        let mut normals = vec![];
+        if let Some(iter) = reader.read_normals() {
+            for n in iter {
+                normals.push(Vec3::from_slice(&n));
+            }
+        }
+
+        assert_eq!(positions.len(), normals.len());
+
+        for (p, n) in positions.into_iter().zip(normals) {
+            model.vertices.push(Vertex {
+                pos: p,
+                color: Vec3::ONE,
+                normal: n,
+            });
+        }
+    }
+
+    commands.insert_resource(model);
 }
 
 fn setup_render_context(
@@ -142,13 +190,18 @@ fn setup_render_context(
     model: Res<Model>,
 ) {
     let render_context =
-        RenderContext::new(windows.primary.clone(), display_handle.0.clone(), &model.0);
+        RenderContext::new(windows.primary.clone(), display_handle.0.clone(), &model);
     commands.insert_resource(render_context);
     info!("Render context was successfully created");
 }
 
-fn render(mut render_context: ResMut<RenderContext>, _windows: Res<AppWindows>, time: Res<Time>) {
-    render_context.draw_frame(time.elapsed_secs_wrapped());
+fn render(
+    mut render_context: ResMut<RenderContext>,
+    _windows: Res<AppWindows>,
+    time: Res<Time>,
+    camera: Single<(&Camera, &Transform)>,
+) {
+    render_context.draw_frame(time.elapsed_secs_wrapped(), camera.into_inner());
 }
 
 fn resize(
@@ -156,13 +209,15 @@ fn resize(
     mut winit_events: MessageReader<RawWinitWindowEvent>,
     _windows: Res<AppWindows>,
     time: Res<Time>,
+    camera: Single<(&Camera, &Transform)>,
 ) {
+    let camera_data = camera.into_inner();
     for event in winit_events.read() {
         match event.event {
             WindowEvent::Resized(size) => {
                 render_context.recreate_window_dependent_objects(size);
                 render_context.swapchain_ok = true;
-                render_context.draw_frame(time.elapsed_secs_wrapped());
+                render_context.draw_frame(time.elapsed_secs_wrapped(), camera_data);
             }
             _ => {}
         }
@@ -261,7 +316,7 @@ pub struct RenderContext {
     swapchain: (vk::SwapchainKHR, khr::swapchain::Device),
     swapchain_images: Vec<vk::Image>,
     swapchain_surface_format: vk::SurfaceFormatKHR,
-    swapchain_extent: vk::Extent2D,
+    pub swapchain_extent: vk::Extent2D,
     swapchain_image_views: Vec<vk::ImageView>,
 
     depth_image: vk::Image,
@@ -296,7 +351,7 @@ pub struct RenderContext {
 }
 
 impl RenderContext {
-    fn new(window: Arc<Window>, display_hadle: OwnedDisplayHandle, model: &tobj::Model) -> Self {
+    fn new(window: Arc<Window>, display_hadle: OwnedDisplayHandle, model: &Model) -> Self {
         unsafe {
             let entry = ash::Entry::linked();
 
@@ -470,7 +525,7 @@ impl RenderContext {
                 vertex_buffer_allocation,
                 index_buffer,
                 index_buffer_allocation,
-                index_count: model.mesh.indices.len(),
+                index_count: model.indices.len(),
 
                 uniform_buffers,
                 uniform_buffers_allocations,
@@ -948,7 +1003,7 @@ impl RenderContext {
             .rasterizer_discard_enable(false)
             .polygon_mode(vk::PolygonMode::FILL)
             .cull_mode(vk::CullModeFlags::BACK)
-            .front_face(vk::FrontFace::CLOCKWISE)
+            .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
             .depth_bias_enable(false)
             .line_width(1.0);
 
@@ -1022,37 +1077,10 @@ impl RenderContext {
     fn create_vertex_buffer(
         device: &Device,
         allocator: &mut Allocator,
-        model: &tobj::Model,
+        model: &Model,
     ) -> (vk::Buffer, Allocation) {
-        let mut vertices = vec![];
-        dbg!(model.mesh.normals.len());
-        dbg!(model.mesh.positions.len());
-        for i in 0..model.mesh.indices.len() {
-            let pos = vec3(
-                model.mesh.positions[3 * i],
-                model.mesh.positions[3 * i + 1],
-                model.mesh.positions[3 * i + 2],
-            );
-
-            let color = model
-                .mesh
-                .vertex_color
-                .get((3 * i)..=(3 * i + 2))
-                .map(Vec3::from_slice)
-                .unwrap_or(Vec3::splat(1.0));
-
-            let normal = model
-                .mesh
-                .normals
-                .get((3 * i)..=(3 * i + 2))
-                .map(Vec3::from_slice)
-                .expect("normals are empty");
-
-            let vertex = Vertex { pos, color, normal };
-            vertices.push(vertex);
-        }
-
-        let size = dbg!(size_of_val(vertices.as_slice())) as u64;
+        let vertices = model.vertices.as_slice();
+        let size = dbg!(size_of_val(vertices)) as u64;
         let (vertex_buffer, mut vertex_buffer_allocation) = create_buffer(
             device,
             allocator,
@@ -1062,8 +1090,7 @@ impl RenderContext {
         );
 
         let _copy_record =
-            presser::copy_from_slice_to_offset(&vertices, &mut vertex_buffer_allocation, 0)
-                .unwrap();
+            presser::copy_from_slice_to_offset(vertices, &mut vertex_buffer_allocation, 0).unwrap();
 
         (vertex_buffer, vertex_buffer_allocation)
     }
@@ -1071,16 +1098,9 @@ impl RenderContext {
     fn create_index_buffer(
         device: &Device,
         allocator: &mut Allocator,
-        model: &tobj::Model,
+        model: &Model,
     ) -> (vk::Buffer, Allocation) {
-        // let mut next_face = 0;
-        // for f in 0..mesh.face_arities.len() {
-        //     let end = next_face + mesh.face_arities[f] as usize;
-        //     let face_indices: Vec<_> = mesh.indices[next_face..end].iter().collect();
-        //     println!("    face[{}] = {:?}", f, face_indices);
-        //     next_face = end;
-        // }
-        let indices = model.mesh.indices.as_slice();
+        let indices = model.indices.as_slice();
 
         let size = size_of_val(indices) as u64;
         let (index_buffer, mut index_buffer_allocation) = create_buffer(
@@ -1182,24 +1202,20 @@ impl RenderContext {
         }
     }
 
-    fn update_uniform_buffers(&mut self, time: f32) {
-        let model = Mat4::from_quat(
-            Quat::from_rotation_z(FRAC_PI_2 * time) * Quat::from_rotation_y(FRAC_PI_2 * time),
+    fn update_uniform_buffers(&mut self, time: f32, camera_data: (&Camera, &Transform)) {
+        let model = Mat4::from_quat(Quat::from_rotation_y(FRAC_PI_8 * time));
+        let view = Mat4::look_to_rh(
+            camera_data.1.position,
+            (camera_data.1.rotation * Vec3::NEG_Z).normalize(),
+            Vec3::Y,
         );
-        let view = Mat4::look_at_rh(vec3(0.0, 4.0, -4.0), Vec3::ZERO, Vec3::Y);
-        let mut projection = Mat4::perspective_rh(
-            FRAC_PI_4,
-            self.swapchain_extent.width as f32 / self.swapchain_extent.height as f32,
-            0.0001,
-            1000.0,
-        );
-        projection.y_axis *= -1.0;
 
         let view_uniform = ViewUniform {
             model,
             view,
-            projection,
-            light_pos: vec3(3.0, 5.0, 0.0),
+            projection: camera_data.0.projection,
+            eye_pos: camera_data.1.position,
+            light_pos: vec3(0.0, 0.0, -10.0),
         };
 
         presser::copy_to_offset(
@@ -1419,7 +1435,7 @@ impl RenderContext {
         }
     }
 
-    fn draw_frame(&mut self, elapsed_time: f32) {
+    fn draw_frame(&mut self, elapsed_time: f32, camera_data: (&Camera, &Transform)) {
         unsafe {
             self.device
                 .wait_for_fences(&[self.in_flight_fences[self.frame_index]], true, u64::MAX)
@@ -1445,7 +1461,7 @@ impl RenderContext {
                 .reset_fences(&[self.in_flight_fences[self.frame_index]])
                 .unwrap();
 
-            self.update_uniform_buffers(elapsed_time);
+            self.update_uniform_buffers(elapsed_time, camera_data);
 
             self.device
                 .reset_command_buffer(

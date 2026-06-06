@@ -42,16 +42,6 @@ fn runner(mut app: App, event_loop: EventLoop<()>) -> AppExit {
         error!("winit event loop returned an error: {err}");
     };
 
-    // unsafe {
-    //     runner_state
-    //         .app
-    //         .world_mut()
-    //         .resource::<RenderContext>()
-    //         .device
-    //         .device_wait_idle()
-    //         .unwrap()
-    // };
-
     runner_state.app.world_mut().run_schedule(CleanUp);
 
     runner_state.app.world_mut().clear_all();
