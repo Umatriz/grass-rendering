@@ -15,6 +15,7 @@ struct ViewUniform {
     float4x4 model;
     float4x4 view;
     float4x4 proj;
+    float3x3 normal;
     float3 eye_pos;
     float3 light_pos;
 };
@@ -27,7 +28,7 @@ VertexOutput vertMain(VertexInput input) {
     output.color = input.color;
     output.sv_position = mul(ubo.proj, mul(ubo.view, mul(ubo.model, float4(input.pos, 1.0))));
     output.position = mul(ubo.model, float4(input.pos, 1.0)).xyz;
-    output.normal = input.normal;
+    output.normal = mul(ubo.normal, input.normal);
 
     return output;
 }

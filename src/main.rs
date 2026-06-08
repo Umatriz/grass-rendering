@@ -74,6 +74,7 @@ fn compile_slang(input: &str, entries: &[&str]) -> io::Result<()> {
             "spirv_1_4",
             "-emit-spirv-directly",
             "-fvk-use-entrypoint-name",
+            "-fvk-use-scalar-layout",
         ])
         .args(entries.iter().flat_map(|entry| ["-entry", entry]))
         .arg("-o")

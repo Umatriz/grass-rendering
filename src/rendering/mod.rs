@@ -19,7 +19,7 @@ use bevy_ecs::{
 use bevy_time::Time;
 use bytemuck::{Pod, Zeroable};
 use camera::Camera;
-use glam::{Mat4, Quat, Vec3, vec3};
+use glam::{Mat3, Mat4, Quat, Vec3, vec3};
 use gltf::{
     accessor::{self, DataType, Dimensions},
     json::camera::Type,
@@ -45,12 +45,14 @@ pub mod camera;
 
 pub const MAX_FRAMES_IN_FLIGHT: u32 = 2;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct ViewUniform {
     model: Mat4,
     view: Mat4,
     projection: Mat4,
+    normal_matrix: Mat3,
+    _pad: Vec3,
     eye_pos: Vec3,
     light_pos: Vec3,
 }
@@ -1214,9 +1216,14 @@ impl RenderContext {
             model,
             view,
             projection: camera_data.0.projection,
+            normal_matrix: Mat3::from_mat4(model).inverse().transpose(),
             eye_pos: camera_data.1.position,
-            light_pos: vec3(0.0, 0.0, -10.0),
+            light_pos: vec3(15.0, 0.0, 0.0),
+            _pad: Vec3::ZERO,
         };
+
+        dbg!(size_of_val(&view_uniform));
+        dbg!(align_of_val(&view_uniform));
 
         presser::copy_to_offset(
             &view_uniform,
