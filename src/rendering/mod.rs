@@ -52,7 +52,6 @@ pub struct ViewUniform {
     view: Mat4,
     projection: Mat4,
     normal_matrix: Mat3,
-    _pad: Vec3,
     eye_pos: Vec3,
     light_pos: Vec3,
 }
@@ -1219,7 +1218,6 @@ impl RenderContext {
             normal_matrix: Mat3::from_mat4(model).inverse().transpose(),
             eye_pos: camera_data.1.position,
             light_pos: vec3(15.0, 0.0, 0.0),
-            _pad: Vec3::ZERO,
         };
 
         dbg!(size_of_val(&view_uniform));
