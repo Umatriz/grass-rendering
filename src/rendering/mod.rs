@@ -301,6 +301,12 @@ fn destroy_render_context(world: &mut World) {
             rc.device.destroy_buffer(buffer, None);
         }
 
+        rc.allocator.free(rc.texture_image_allocation).unwrap();
+        rc.device.destroy_image(rc.texture_image, None);
+        rc.device.destroy_image_view(rc.texture_image_view, None);
+
+        rc.device.destroy_sampler(rc.sampler, None);
+
         rc.device
             .free_descriptor_sets(rc.descriptor_pool, &rc.descriptor_sets)
             .unwrap();
@@ -346,6 +352,8 @@ pub struct RenderContext {
     texture_image: vk::Image,
     texture_image_allocation: Allocation,
     texture_image_view: vk::ImageView,
+
+    sampler: vk::Sampler,
 
     descriptor_set_layout: vk::DescriptorSetLayout,
     descriptor_sets: Vec<vk::DescriptorSet>,
@@ -548,6 +556,8 @@ impl RenderContext {
                 texture_image_allocation,
                 texture_image_view,
 
+                sampler,
+
                 descriptor_set_layout,
                 descriptor_sets,
                 descriptor_pool,
@@ -643,17 +653,20 @@ impl RenderContext {
                             .any(|prop| prop.extension_name_as_c_str().unwrap() == ext)
                     });
 
+                let mut vulkan_1_2_features = vk::PhysicalDeviceVulkan12Features::default();
                 let mut vulkan_1_3_features = vk::PhysicalDeviceVulkan13Features::default();
                 let mut extended_dynamic_state =
                     vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT::default();
 
                 let mut features = vk::PhysicalDeviceFeatures2::default()
                     .push_next(&mut extended_dynamic_state)
+                    .push_next(&mut vulkan_1_2_features)
                     .push_next(&mut vulkan_1_3_features);
                 instance.get_physical_device_features2(physical_device, &mut features);
 
                 let supports_required_features = features.features.sampler_anisotropy == vk::TRUE
                     && extended_dynamic_state.extended_dynamic_state == vk::TRUE
+                    && vulkan_1_2_features.scalar_block_layout == vk::TRUE
                     && vulkan_1_3_features.dynamic_rendering == vk::TRUE
                     && vulkan_1_3_features.synchronization2 == vk::TRUE;
 
@@ -722,6 +735,8 @@ impl RenderContext {
                 .queue_family_index(graphics_index as u32)
                 .queue_priorities(&[0.5]);
 
+            let mut vulkan_1_2_features =
+                vk::PhysicalDeviceVulkan12Features::default().scalar_block_layout(true);
             let mut vulkan_1_3_features = vk::PhysicalDeviceVulkan13Features::default()
                 .dynamic_rendering(true)
                 .synchronization2(true);
@@ -730,9 +745,9 @@ impl RenderContext {
                     .extended_dynamic_state(true);
             let mut physical_device_features_2 = vk::PhysicalDeviceFeatures2::default()
                 .features(vk::PhysicalDeviceFeatures::default().sampler_anisotropy(true))
+                .push_next(&mut vulkan_1_2_features)
                 .push_next(&mut vulkan_1_3_features)
                 .push_next(&mut extended_dynamic_state_features);
-
             // TODO: the same list is used when picking physical device
             let required_device_extensions = [khr::swapchain::NAME.as_ptr()];
 
@@ -1185,6 +1200,11 @@ impl RenderContext {
                 vk::ImageAspectFlags::COLOR,
             );
         });
+
+        unsafe { device.queue_wait_idle(*queue).unwrap() };
+
+        allocator.free(staging_allocation).unwrap();
+        unsafe { device.destroy_buffer(staging_buffer, None) };
 
         // create ImageView
         let view_info = vk::ImageViewCreateInfo::default()
