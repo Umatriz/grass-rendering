@@ -11,9 +11,12 @@ use tracing::{Level, error, info, warn};
 use tracing_subscriber::{filter, layer::SubscriberExt, util::SubscriberInitExt};
 use windowing::WindowingPlugin;
 
+mod dense_storage;
 mod rendering;
 mod transform;
 mod windowing;
+
+pub type Result<T> = anyhow::Result<T>;
 
 fn main() -> AppExit {
     let file = OpenOptions::new()

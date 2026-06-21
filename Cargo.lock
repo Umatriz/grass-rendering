@@ -1240,12 +1240,14 @@ dependencies = [
 name = "grass-rendering"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "ash",
  "ash-window",
  "bevy_app",
  "bevy_ecs",
  "bevy_time",
  "bytemuck",
+ "crossbeam-channel",
  "dolly",
  "glam 0.32.1",
  "gltf",
@@ -1254,6 +1256,7 @@ dependencies = [
  "itertools",
  "presser",
  "raw-window-handle",
+ "thiserror 2.0.18",
  "tobj",
  "tracing",
  "tracing-subscriber",
