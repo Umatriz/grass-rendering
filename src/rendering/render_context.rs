@@ -48,7 +48,7 @@ pub struct RenderContext {
     pub device: ash::Device,
     queue: vk::Queue,
 
-    allocator: Allocator,
+    pub allocator: Allocator,
 
     swapchain: (vk::SwapchainKHR, khr::swapchain::Device),
     swapchain_images: Vec<vk::Image>,

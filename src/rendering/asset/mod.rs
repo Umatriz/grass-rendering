@@ -16,6 +16,8 @@ use crate::{
 
 use super::{CleanUp, render_context::destroy_render_context};
 
+pub mod common;
+
 pub struct RenderAssetsPlugin;
 
 impl Plugin for RenderAssetsPlugin {
