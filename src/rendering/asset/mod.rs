@@ -9,10 +9,7 @@ use bevy_ecs::{
 use crossbeam_channel::{Receiver, Sender};
 use tracing::error;
 
-use crate::{
-    Result,
-    dense_storage::{DenseStorage, Index},
-};
+use crate::dense_storage::{DenseStorage, Index};
 
 use super::{CleanUp, render_context::destroy_render_context};
 
@@ -78,13 +75,13 @@ pub struct DeletionQueueSender {
 }
 
 impl DeletionQueueSender {
-    pub fn queue_deletion(&self, deletion_fn: DeletionFn) -> Result<()> {
+    pub fn queue_deletion(&self, deletion_fn: DeletionFn) -> anyhow::Result<()> {
         self.sender.send(deletion_fn)?;
         Ok(())
     }
 }
 pub trait RenderAsset: Send + Sync + 'static {
-    fn destroy(self, world: &mut World) -> Result<()>;
+    fn destroy(self, world: &mut World) -> anyhow::Result<()>;
 }
 
 #[derive(Resource)]

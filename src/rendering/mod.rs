@@ -47,9 +47,11 @@ use crate::{
 
 pub mod asset;
 pub mod camera;
+pub mod descriptor_management;
+pub mod pipeline;
 pub mod render_context;
 
-pub const MAX_FRAMES_IN_FLIGHT: u32 = 2;
+pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]

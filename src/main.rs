@@ -16,8 +16,6 @@ mod rendering;
 mod transform;
 mod windowing;
 
-pub type Result<T> = anyhow::Result<T>;
-
 fn main() -> AppExit {
     let file = OpenOptions::new()
         .create(true)
