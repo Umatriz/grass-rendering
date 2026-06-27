@@ -6,7 +6,9 @@ use std::{
 
 use bevy_app::{App, AppExit, PreStartup};
 use bevy_time::TimePlugin;
-use rendering::{RenderingPlugin, camera::CameraPlugin};
+use rendering::{
+    RenderingPlugin, asset::RenderAssetsPlugin, camera::CameraPlugin, depth::DepthAttachmentPlugin,
+};
 use tracing::{Level, error, info, warn};
 use tracing_subscriber::{filter, layer::SubscriberExt, util::SubscriberInitExt};
 use windowing::WindowingPlugin;
@@ -52,7 +54,13 @@ fn main() -> AppExit {
 
     App::new()
         .add_plugins(TimePlugin)
-        .add_plugins((WindowingPlugin, RenderingPlugin, CameraPlugin))
+        .add_plugins((
+            WindowingPlugin,
+            RenderingPlugin,
+            RenderAssetsPlugin,
+            DepthAttachmentPlugin,
+            CameraPlugin,
+        ))
         .add_systems(PreStartup, compile_shaders)
         .run()
 }

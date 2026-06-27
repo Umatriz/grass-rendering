@@ -47,7 +47,9 @@ use crate::{
 
 pub mod asset;
 pub mod camera;
+pub mod depth;
 pub mod descriptor_management;
+pub mod mesh;
 pub mod pipeline;
 pub mod render_context;
 

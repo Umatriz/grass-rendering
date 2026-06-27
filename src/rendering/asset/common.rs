@@ -6,9 +6,9 @@ use crate::rendering::render_context::RenderContext;
 use super::RenderAsset;
 
 pub struct SimpleImage {
-    image: vk::Image,
-    view: vk::ImageView,
-    allocation: Allocation,
+    pub image: vk::Image,
+    pub view: vk::ImageView,
+    pub allocation: Allocation,
 }
 
 impl RenderAsset for SimpleImage {
@@ -25,8 +25,8 @@ impl RenderAsset for SimpleImage {
 }
 
 pub struct Buffer {
-    buffer: vk::Buffer,
-    allocation: Allocation,
+    pub buffer: vk::Buffer,
+    pub allocation: Allocation,
 }
 
 impl RenderAsset for Buffer {

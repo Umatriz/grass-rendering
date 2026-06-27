@@ -19,12 +19,12 @@ pub struct RenderContextPlugin;
 
 impl Plugin for RenderContextPlugin {
     fn build(&self, app: &mut bevy_app::App) {
-        app.add_systems(Startup, setup_render_context)
+        app.add_systems(Startup, create_render_context)
             .add_systems(CleanUp, destroy_render_context);
     }
 }
 
-fn setup_render_context(
+pub fn create_render_context(
     mut commands: Commands,
     windows: Res<AppWindows>,
     display_handle: Res<WinitOwnedDisplayHandle>,
@@ -37,24 +37,24 @@ fn setup_render_context(
 #[derive(Resource)]
 pub struct RenderContext {
     entry: ash::Entry,
-    instance: ash::Instance,
+    pub instance: ash::Instance,
 
     debug_utils_loader: ext::debug_utils::Instance,
     debug_callback: vk::DebugUtilsMessengerEXT,
 
-    surface: (vk::SurfaceKHR, khr::surface::Instance),
+    pub surface: (vk::SurfaceKHR, khr::surface::Instance),
 
-    physical_device: vk::PhysicalDevice,
+    pub physical_device: vk::PhysicalDevice,
     pub device: ash::Device,
-    queue: vk::Queue,
+    pub queue: vk::Queue,
 
     pub allocator: Allocator,
 
-    swapchain: (vk::SwapchainKHR, khr::swapchain::Device),
-    swapchain_images: Vec<vk::Image>,
-    swapchain_surface_format: vk::SurfaceFormatKHR,
+    pub swapchain: (vk::SwapchainKHR, khr::swapchain::Device),
+    pub swapchain_images: Vec<vk::Image>,
+    pub swapchain_surface_format: vk::SurfaceFormatKHR,
     pub swapchain_extent: vk::Extent2D,
-    swapchain_image_views: Vec<vk::ImageView>,
+    pub swapchain_image_views: Vec<vk::ImageView>,
 
     // depth_image: vk::Image,
     // depth_image_allocation: Allocation,
@@ -88,7 +88,7 @@ pub struct RenderContext {
     // present_complete_semaphores: Vec<vk::Semaphore>,
     // render_finished_semaphores: Vec<vk::Semaphore>,
     // in_flight_fences: Vec<vk::Fence>,
-    frame_index: usize,
+    pub frame_index: usize,
     swapchain_ok: bool,
 }
 
