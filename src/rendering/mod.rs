@@ -66,49 +66,6 @@ pub struct ViewUniform {
     light_pos: Vec3,
 }
 
-#[derive(Pod, Zeroable, Clone, Copy, Debug)]
-#[repr(C)]
-pub struct Vertex {
-    pos: Vec3,
-    color: Vec3,
-    normal: Vec3,
-    uv: Vec2,
-}
-
-impl Vertex {
-    fn get_binding_description() -> vk::VertexInputBindingDescription {
-        vk::VertexInputBindingDescription::default()
-            .binding(0)
-            .stride(size_of::<Vertex>() as u32)
-            .input_rate(vk::VertexInputRate::VERTEX)
-    }
-
-    fn get_attribute_descriptions() -> [vk::VertexInputAttributeDescription; 4] {
-        [
-            vk::VertexInputAttributeDescription::default()
-                .location(0)
-                .binding(0)
-                .format(vk::Format::R32G32B32_SFLOAT)
-                .offset(mem::offset_of!(Vertex, pos) as u32),
-            vk::VertexInputAttributeDescription::default()
-                .location(1)
-                .binding(0)
-                .format(vk::Format::R32G32B32_SFLOAT)
-                .offset(mem::offset_of!(Vertex, color) as u32),
-            vk::VertexInputAttributeDescription::default()
-                .location(2)
-                .binding(0)
-                .format(vk::Format::R32G32B32_SFLOAT)
-                .offset(mem::offset_of!(Vertex, normal) as u32),
-            vk::VertexInputAttributeDescription::default()
-                .location(3)
-                .binding(0)
-                .format(vk::Format::R32G32_SFLOAT)
-                .offset(mem::offset_of!(Vertex, uv) as u32),
-        ]
-    }
-}
-
 // const VERTICES: &[Vertex] = &[
 //     Vertex {
 //         pos: vec2(-0.5, -0.5),
@@ -143,71 +100,6 @@ impl Plugin for RenderingPlugin {
 /// This schedule runs after the window is closed but before `world.clear_all()`.
 #[derive(ScheduleLabel, Hash, Debug, PartialEq, Eq, Clone)]
 pub struct CleanUp;
-
-#[derive(Resource)]
-pub struct Model {
-    vertices: Vec<Vertex>,
-    indices: Vec<u32>,
-}
-
-fn prepara_models(mut commands: Commands) {
-    let (document, buffers, images) = gltf::import("monkey.glb").unwrap();
-    let mesh = document
-        .meshes()
-        .find(|m| m.name() == Some("Suzanne"))
-        .unwrap();
-
-    let mut model = Model {
-        vertices: vec![],
-        indices: vec![],
-    };
-
-    for primitive in mesh.primitives() {
-        let reader = primitive.reader(|b| Some(&buffers[b.index()]));
-        let mut indices = vec![];
-        if let Some(ReadIndices::U16(iter)) = reader.read_indices() {
-            for v in iter {
-                indices.push(v);
-            }
-        }
-        model.indices.extend(indices.into_iter().map(|i| i as u32));
-
-        let mut positions = vec![];
-        if let Some(iter) = reader.read_positions() {
-            for p in iter {
-                positions.push(Vec3::from_slice(&p));
-            }
-        }
-
-        let mut normals = vec![];
-        if let Some(iter) = reader.read_normals() {
-            for n in iter {
-                normals.push(Vec3::from_slice(&n));
-            }
-        }
-
-        let mut uvs = vec![];
-        if let Some(tex_coords) = reader.read_tex_coords(0) {
-            let iter = tex_coords.into_f32();
-            for uv in iter {
-                uvs.push(Vec2::from_array(uv));
-            }
-        }
-
-        assert_eq!(positions.len(), normals.len());
-
-        for (p, n, uv) in multizip((positions, normals, uvs)) {
-            model.vertices.push(Vertex {
-                pos: p,
-                color: Vec3::ONE,
-                normal: n,
-                uv,
-            });
-        }
-    }
-
-    commands.insert_resource(model);
-}
 
 // fn setup_render_context(
 //     mut commands: Commands,
