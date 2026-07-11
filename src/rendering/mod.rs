@@ -12,6 +12,7 @@ use ash::{
     nv::device_diagnostics_config,
     vk::{self, Fence},
 };
+use asset::{RenderAssets, common::SimpleImage};
 use bevy_app::{Plugin, PostUpdate, Startup};
 use bevy_ecs::{
     message::MessageReader,
@@ -23,6 +24,7 @@ use bevy_ecs::{
 use bevy_time::Time;
 use bytemuck::{Pod, Zeroable};
 use camera::Camera;
+use depth::DepthAttachment;
 use glam::{Mat3, Mat4, Quat, Vec2, Vec3, vec3};
 use gltf::{
     accessor::{self, DataType, Dimensions},
@@ -37,6 +39,7 @@ use itertools::{Itertools, multizip};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use render_context::RenderContext;
 use tracing::{error, info, trace, warn};
+use utils::transition_image_layout;
 use winit::{
     dpi::PhysicalSize, event::WindowEvent, event_loop::OwnedDisplayHandle, window::Window,
 };
@@ -100,7 +103,9 @@ impl Plugin for RenderingPlugin {
                 RenderSet::Prepare,
                 RenderSet::BeginRender,
                 RenderSet::AquireSwapchainImage,
-                RenderSet::RecordCommandBuffers,
+                RenderSet::BeginCommandBuffer,
+                RenderSet::RecordCommandBufferRender,
+                RenderSet::EndCommandBuffer,
                 RenderSet::SubmitQueue,
             )
                 .chain(),
@@ -110,7 +115,8 @@ impl Plugin for RenderingPlugin {
             PostUpdate,
             (
                 aquire_swapchain_image_index.in_set(RenderSet::AquireSwapchainImage),
-                record_command_buffer.in_set(RenderSet::RecordCommandBuffers),
+                begin_command_buffer.in_set(RenderSet::BeginCommandBuffer),
+                end_command_buffer.in_set(RenderSet::EndCommandBuffer),
                 queue_submit_present.in_set(RenderSet::SubmitQueue),
             ),
         );
@@ -127,7 +133,9 @@ pub enum RenderSet {
     Prepare,
     BeginRender,
     AquireSwapchainImage,
-    RecordCommandBuffers,
+    BeginCommandBuffer,
+    RecordCommandBufferRender,
+    EndCommandBuffer,
     SubmitQueue,
 }
 
@@ -168,7 +176,13 @@ fn aquire_swapchain_image_index(mut commands: Commands, mut rc: ResMut<RenderCon
     // rc.record_command_buffer(image_index as usize);
 }
 
-fn record_command_buffer(rc: Res<RenderContext>) {
+fn begin_command_buffer(
+    rc: Res<RenderContext>,
+    image_index: Res<FrameSwapchainImageIndex>,
+    depth_attachment: Res<DepthAttachment>,
+    simple_images: Res<RenderAssets<SimpleImage>>,
+) -> bevy_ecs::error::Result {
+    let depth_attachment_image = simple_images.get(depth_attachment.image).unwrap();
     unsafe {
         rc.device
             .reset_command_buffer(
@@ -176,6 +190,101 @@ fn record_command_buffer(rc: Res<RenderContext>) {
                 vk::CommandBufferResetFlags::empty(),
             )
             .unwrap();
+
+        let command_buffer = rc.command_buffers[rc.frame_index];
+
+        rc.device
+            .begin_command_buffer(command_buffer, &vk::CommandBufferBeginInfo::default())?;
+
+        transition_image_layout(
+            &rc.device,
+            rc.command_buffers[rc.frame_index],
+            rc.swapchain_images[image_index.0],
+            vk::ImageLayout::UNDEFINED,
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            vk::AccessFlags2::empty(),
+            vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+            vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+            vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+            vk::ImageAspectFlags::COLOR,
+        );
+
+        transition_image_layout(
+            &rc.device,
+            rc.command_buffers[rc.frame_index],
+            depth_attachment_image.image,
+            vk::ImageLayout::UNDEFINED,
+            vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+            vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE,
+            vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE,
+            vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS
+                | vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS,
+            vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS
+                | vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS,
+            vk::ImageAspectFlags::DEPTH | vk::ImageAspectFlags::STENCIL,
+        );
+
+        let clear_value = vk::ClearValue {
+            color: vk::ClearColorValue {
+                float32: [0.0, 0.0, 0.0, 0.0],
+            },
+        };
+        let clear_depth = vk::ClearValue {
+            depth_stencil: vk::ClearDepthStencilValue::default().depth(1.0).stencil(0),
+        };
+
+        let attachment_info = vk::RenderingAttachmentInfo::default()
+            .image_view(rc.swapchain_image_views[image_index.0])
+            .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+            .load_op(vk::AttachmentLoadOp::CLEAR)
+            .store_op(vk::AttachmentStoreOp::STORE)
+            .clear_value(clear_value);
+
+        let depth_attachment = vk::RenderingAttachmentInfo::default()
+            .image_view(depth_attachment_image.view)
+            .image_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
+            .load_op(vk::AttachmentLoadOp::CLEAR)
+            .store_op(vk::AttachmentStoreOp::DONT_CARE)
+            .clear_value(clear_depth);
+
+        let color_attachments = &[attachment_info];
+        let rendering_info = vk::RenderingInfo::default()
+            .render_area(
+                vk::Rect2D::default()
+                    .offset(vk::Offset2D::default().x(0).y(0))
+                    .extent(rc.swapchain_extent),
+            )
+            .layer_count(1)
+            .color_attachments(color_attachments)
+            .depth_attachment(&depth_attachment);
+
+        rc.device
+            .cmd_begin_rendering(command_buffer, &rendering_info);
+    }
+
+    Ok(())
+}
+
+fn end_command_buffer(rc: Res<RenderContext>, image_index: Res<FrameSwapchainImageIndex>) {
+    unsafe {
+        let command_buffer = rc.command_buffers[rc.frame_index];
+
+        rc.device.cmd_end_rendering(command_buffer);
+
+        transition_image_layout(
+            &rc.device,
+            rc.command_buffers[rc.frame_index],
+            rc.swapchain_images[image_index.0],
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            vk::ImageLayout::PRESENT_SRC_KHR,
+            vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+            vk::AccessFlags2::empty(),
+            vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+            vk::PipelineStageFlags2::BOTTOM_OF_PIPE,
+            vk::ImageAspectFlags::COLOR,
+        );
+
+        rc.device.end_command_buffer(command_buffer).unwrap();
     }
 }
 

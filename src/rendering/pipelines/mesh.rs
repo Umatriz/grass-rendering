@@ -171,96 +171,21 @@ pub fn destroy_mesh_pipeline(world: &mut World) {
     }
 }
 
-pub fn record_command_buffer_mesh_pipeline(
-    pipeline: Res<MeshPipeline>,
-    mut rc: ResMut<RenderContext>,
-    depth_attachment: Res<DepthAttachment>,
-    simple_images: Res<RenderAssets<SimpleImage>>,
-) -> bevy_ecs::error::Result {
-    let depth_attachment_image = simple_images.get(depth_attachment.image.clone()).unwrap();
+pub fn record_command_buffer_render(rc: Res<RenderContext>, mesh_pipeline: Res<MeshPipeline>) {
+    let command_buffer = rc.get_current_command_buffer();
 
     unsafe {
-        let command_buffer = rc.command_buffers[rc.frame_index];
-
-        rc.device
-            .begin_command_buffer(command_buffer, &vk::CommandBufferBeginInfo::default())?;
-
-        transition_image_layout(
-            &rc.device,
-            rc.command_buffers[rc.frame_index],
-            rc.swapchain_images[swapchain_image_index],
-            vk::ImageLayout::UNDEFINED,
-            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-            vk::AccessFlags2::empty(),
-            vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
-            vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
-            vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
-            vk::ImageAspectFlags::COLOR,
-        );
-
-        transition_image_layout(
-            &rc.device,
-            rc.command_buffers[rc.frame_index],
-            depth_attachment_image.image,
-            vk::ImageLayout::UNDEFINED,
-            vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-            vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE,
-            vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE,
-            vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS
-                | vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS,
-            vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS
-                | vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS,
-            vk::ImageAspectFlags::DEPTH | vk::ImageAspectFlags::STENCIL,
-        );
-
-        let clear_value = vk::ClearValue {
-            color: vk::ClearColorValue {
-                float32: [0.0, 0.0, 0.0, 0.0],
-            },
-        };
-        let clear_depth = vk::ClearValue {
-            depth_stencil: vk::ClearDepthStencilValue::default().depth(1.0).stencil(0),
-        };
-
-        let attachment_info = vk::RenderingAttachmentInfo::default()
-            .image_view(rc.swapchain_image_views[swapchain_image_index])
-            .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-            .load_op(vk::AttachmentLoadOp::CLEAR)
-            .store_op(vk::AttachmentStoreOp::STORE)
-            .clear_value(clear_value);
-
-        let depth_attachment = vk::RenderingAttachmentInfo::default()
-            .image_view(depth_attachment_image.view)
-            .image_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
-            .load_op(vk::AttachmentLoadOp::CLEAR)
-            .store_op(vk::AttachmentStoreOp::DONT_CARE)
-            .clear_value(clear_depth);
-
-        let color_attachments = &[attachment_info];
-        let rendering_info = vk::RenderingInfo::default()
-            .render_area(
-                vk::Rect2D::default()
-                    .offset(vk::Offset2D::default().x(0).y(0))
-                    .extent(rc.swapchain_extent),
-            )
-            .layer_count(1)
-            .color_attachments(color_attachments)
-            .depth_attachment(&depth_attachment);
-
-        rc.device
-            .cmd_begin_rendering(command_buffer, &rendering_info);
-
         rc.device.cmd_bind_pipeline(
             command_buffer,
             vk::PipelineBindPoint::GRAPHICS,
-            pipeline.pipeline,
+            mesh_pipeline.pipeline,
         );
 
-        rc.device
-            .cmd_bind_vertex_buffers(command_buffer, 0, &[rc.vertex_buffer], &[0]);
+        // rc.device
+        //     .cmd_bind_vertex_buffers(command_buffer, 0, &[rc.vertex_buffer], &[0]);
 
-        rc.device
-            .cmd_bind_index_buffer(command_buffer, rc.index_buffer, 0, vk::IndexType::UINT32);
+        // rc.device
+        //     .cmd_bind_index_buffer(command_buffer, rc.index_buffer, 0, vk::IndexType::UINT32);
 
         rc.device.cmd_set_viewport(
             command_buffer,
@@ -284,32 +209,13 @@ pub fn record_command_buffer_mesh_pipeline(
         rc.device.cmd_bind_descriptor_sets(
             command_buffer,
             vk::PipelineBindPoint::GRAPHICS,
-            rc.pipeline_layout,
+            mesh_pipeline.layout,
             0,
-            &[rc.descriptor_sets[rc.frame_index]],
+            mesh_pipeline.descriptor_cache.descriptor_sets(),
             &[],
         );
 
-        rc.device
-            .cmd_draw_indexed(command_buffer, rc.index_count as u32, 1, 0, 0, 0);
-
-        rc.device.cmd_end_rendering(command_buffer);
-
-        transition_image_layout(
-            &rc.device,
-            rc.command_buffers[rc.frame_index],
-            rc.swapchain_images[swapchain_image_index],
-            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-            vk::ImageLayout::PRESENT_SRC_KHR,
-            vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
-            vk::AccessFlags2::empty(),
-            vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
-            vk::PipelineStageFlags2::BOTTOM_OF_PIPE,
-            vk::ImageAspectFlags::COLOR,
-        );
-
-        rc.device.end_command_buffer(command_buffer).unwrap();
+        // rc.device
+        //     .cmd_draw_indexed(command_buffer, rc.index_count as u32, 1, 0, 0, 0);
     }
-
-    Ok(())
 }

@@ -228,6 +228,10 @@ impl RenderContext {
             }
         }
     }
+
+    pub fn get_current_command_buffer(&self) -> vk::CommandBuffer {
+        self.command_buffers[self.frame_index]
+    }
 }
 
 pub fn destroy_render_context(world: &mut World) {
