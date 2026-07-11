@@ -43,13 +43,13 @@ impl DescriptorKind {
     }
 }
 
-pub struct DescriptorChache {
+pub struct DescriptorCache {
     pool: vk::DescriptorPool,
     layout: vk::DescriptorSetLayout,
     descriptor_sets: Vec<vk::DescriptorSet>,
 }
 
-impl DescriptorChache {
+impl DescriptorCache {
     pub fn new(device: &ash::Device, bindings: &[DescriptorSetBinding]) -> anyhow::Result<Self> {
         // Layout
         let vk_bindings = bindings

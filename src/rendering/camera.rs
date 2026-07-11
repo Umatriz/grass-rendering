@@ -18,7 +18,7 @@ use crate::{
     windowing::{AppWindows, RawWinitWindowEvent},
 };
 
-use super::{RenderContext, render, resize};
+use super::{RenderSet, render_context::RenderContext};
 
 pub struct CameraPlugin;
 
@@ -26,7 +26,7 @@ impl Plugin for CameraPlugin {
     fn build(&self, app: &mut bevy_app::App) {
         app.add_systems(Startup, spawn_camera);
         app.add_systems(Update, move_camera);
-        app.add_systems(PostUpdate, update_camera.after(resize).before(render));
+        app.add_systems(PostUpdate, update_camera.in_set(RenderSet::Prepare));
     }
 }
 

@@ -13,7 +13,7 @@ use winit::{dpi::PhysicalSize, event_loop::OwnedDisplayHandle, window::Window};
 
 use crate::windowing::{AppWindows, WinitOwnedDisplayHandle};
 
-use super::CleanUp;
+use super::{CleanUp, MAX_FRAMES_IN_FLIGHT};
 
 pub struct RenderContextPlugin;
 
@@ -81,15 +81,15 @@ pub struct RenderContext {
 
     // uniform_buffers: Vec<vk::Buffer>,
     // uniform_buffers_allocations: Vec<Allocation>,
+    pub command_pool: vk::CommandPool,
+    pub command_buffers: Vec<vk::CommandBuffer>,
 
-    // command_pool: vk::CommandPool,
-    // command_buffers: Vec<vk::CommandBuffer>,
+    pub present_complete_semaphores: Vec<vk::Semaphore>,
+    pub render_finished_semaphores: Vec<vk::Semaphore>,
+    pub in_flight_fences: Vec<vk::Fence>,
 
-    // present_complete_semaphores: Vec<vk::Semaphore>,
-    // render_finished_semaphores: Vec<vk::Semaphore>,
-    // in_flight_fences: Vec<vk::Fence>,
     pub frame_index: usize,
-    swapchain_ok: bool,
+    pub swapchain_ok: bool,
 }
 
 impl RenderContext {
@@ -190,6 +190,12 @@ impl RenderContext {
             let swapchain_image_views =
                 create_image_views(&device, swapchain_surface_format, &swapchain_images);
 
+            let command_pool = create_command_pool(&device, queue_family_index);
+            let command_buffers = create_command_buffers(&device, command_pool);
+
+            let (present_complete_semaphores, render_finished_semaphores, in_flight_fences) =
+                create_sync_objects(&device, swapchain_images.len());
+
             Self {
                 entry,
                 instance,
@@ -209,6 +215,13 @@ impl RenderContext {
                 swapchain_surface_format,
                 swapchain_extent,
                 swapchain_image_views,
+
+                command_pool,
+                command_buffers,
+
+                in_flight_fences,
+                render_finished_semaphores,
+                present_complete_semaphores,
 
                 frame_index: 0,
                 swapchain_ok: false,
@@ -612,4 +625,65 @@ fn create_image_views(
     }
 
     image_views
+}
+
+fn create_command_pool(device: &Device, queue_family_index: u32) -> vk::CommandPool {
+    let create_info = vk::CommandPoolCreateInfo::default()
+        .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
+        .queue_family_index(queue_family_index);
+
+    unsafe { device.create_command_pool(&create_info, None).unwrap() }
+}
+
+fn create_command_buffers(
+    device: &Device,
+    command_pool: vk::CommandPool,
+) -> Vec<vk::CommandBuffer> {
+    let command_buffer_alloc_info = vk::CommandBufferAllocateInfo::default()
+        .command_pool(command_pool)
+        .level(vk::CommandBufferLevel::PRIMARY)
+        .command_buffer_count(MAX_FRAMES_IN_FLIGHT as u32);
+
+    unsafe {
+        device
+            .allocate_command_buffers(&command_buffer_alloc_info)
+            .unwrap()
+    }
+}
+
+fn create_sync_objects(
+    device: &Device,
+    num_swapchain_images: usize,
+) -> (Vec<vk::Semaphore>, Vec<vk::Semaphore>, Vec<vk::Fence>) {
+    unsafe {
+        let (present_complete_semaphores, in_flight_fences) = (0..MAX_FRAMES_IN_FLIGHT)
+            .map(|_| {
+                (
+                    device
+                        .create_semaphore(&vk::SemaphoreCreateInfo::default(), None)
+                        .unwrap(),
+                    device
+                        .create_fence(
+                            &vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED),
+                            None,
+                        )
+                        .unwrap(),
+                )
+            })
+            .unzip();
+
+        let render_finished_semaphores = (0..num_swapchain_images)
+            .map(|_| {
+                device
+                    .create_semaphore(&vk::SemaphoreCreateInfo::default(), None)
+                    .unwrap()
+            })
+            .collect_vec();
+
+        (
+            present_complete_semaphores,
+            render_finished_semaphores,
+            in_flight_fences,
+        )
+    }
 }

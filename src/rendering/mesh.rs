@@ -66,14 +66,14 @@ pub struct Vertex {
 }
 
 impl Vertex {
-    fn get_binding_description() -> vk::VertexInputBindingDescription {
+    pub fn get_binding_description() -> vk::VertexInputBindingDescription {
         vk::VertexInputBindingDescription::default()
             .binding(0)
             .stride(size_of::<Vertex>() as u32)
             .input_rate(vk::VertexInputRate::VERTEX)
     }
 
-    fn get_attribute_descriptions() -> [vk::VertexInputAttributeDescription; 4] {
+    pub fn get_attribute_descriptions() -> [vk::VertexInputAttributeDescription; 4] {
         [
             vk::VertexInputAttributeDescription::default()
                 .location(0)

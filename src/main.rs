@@ -1,3 +1,6 @@
+// TODO: remove after refactor
+#![allow(warnings)]
+
 use std::{
     fs::{File, OpenOptions},
     io,
