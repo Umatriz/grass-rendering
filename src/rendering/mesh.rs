@@ -1,11 +1,35 @@
 use std::{collections::BTreeMap, mem};
 
 use ash::vk;
+use bevy_app::Plugin;
+use bevy_ecs::{
+    component::Component,
+    entity::Entity,
+    lifecycle::Insert,
+    observer::On,
+    query::Changed,
+    system::{Commands, Query, Res, ResMut},
+};
 use bytemuck::{Pod, Zeroable};
 use glam::{Vec2, Vec3};
 use gltf::{buffer, mesh::util::ReadIndices};
+use gpu_allocator::MemoryLocation;
 use itertools::{Itertools, multizip};
 
+use super::{
+    asset::{Handle, RenderAssets, common::Buffer},
+    render_context::RenderContext,
+};
+
+pub struct MeshPlugin;
+
+impl Plugin for MeshPlugin {
+    fn build(&self, app: &mut bevy_app::App) {
+        app.add_observer(generate_mesh_render_data);
+    }
+}
+
+#[derive(Component)]
 pub struct Mesh {
     pub indices: Vec<u32>,
     pub vertices: Vec<Vertex>,
@@ -97,4 +121,45 @@ impl Vertex {
                 .offset(mem::offset_of!(Vertex, uv) as u32),
         ]
     }
+}
+
+#[derive(Component)]
+pub struct MeshRenderData {
+    pub index_buffer: Handle<Buffer>,
+    pub vertex_buffer: Handle<Buffer>,
+}
+
+fn generate_mesh_render_data(
+    on: On<Insert, Mesh>,
+    mut commands: Commands,
+    meshes: Query<&Mesh>,
+    mut rc: ResMut<RenderContext>,
+    mut buffers: ResMut<RenderAssets<Buffer>>,
+) {
+    let mesh = meshes.get(on.entity).unwrap();
+
+    let indices = mesh.indices.as_slice();
+    let mut index_buffer = Buffer::new(
+        &rc.device.clone(),
+        &mut rc.allocator,
+        size_of_val(indices) as vk::DeviceSize,
+        vk::BufferUsageFlags::INDEX_BUFFER,
+        MemoryLocation::CpuToGpu,
+    );
+    index_buffer.write(indices).unwrap();
+
+    let vertices = mesh.vertices.as_slice();
+    let mut vertex_buffer = Buffer::new(
+        &rc.device.clone(),
+        &mut rc.allocator,
+        size_of_val(vertices) as vk::DeviceSize,
+        vk::BufferUsageFlags::VERTEX_BUFFER,
+        MemoryLocation::CpuToGpu,
+    );
+    vertex_buffer.write(vertices).unwrap();
+
+    let mesh_render_data = MeshRenderData {
+        index_buffer: buffers.add(index_buffer),
+        vertex_buffer: buffers.add(vertex_buffer),
+    };
 }
