@@ -147,6 +147,7 @@ impl RenderAsset for SimpleImage {
 pub struct Buffer {
     pub buffer: vk::Buffer,
     pub allocation: Allocation,
+    pub size: vk::DeviceSize,
 }
 
 impl Buffer {
@@ -180,8 +181,19 @@ impl Buffer {
                 .bind_buffer_memory(buffer, allocation.memory(), allocation.offset())
                 .unwrap();
 
-            Self { buffer, allocation }
+            Self {
+                buffer,
+                allocation,
+                size,
+            }
         }
+    }
+
+    pub fn write<T: Copy>(
+        &mut self,
+        data: &[T],
+    ) -> Result<presser::CopyRecord, presser::CopyError> {
+        presser::copy_from_slice_to_offset(data, &mut self.allocation, 0)
     }
 }
 
